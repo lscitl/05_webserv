@@ -101,7 +101,7 @@ int main() {
 		}
 
 		change_list.clear();  // clear change_list for new changes
-
+		std::cout << "asdf" << std::endl;
 		for ( int i = 0; i < new_events; ++i ) {
 			curr_event = &event_list[i];
 
@@ -128,7 +128,7 @@ int main() {
 					change_events( change_list, client_socket, EVFILT_READ,
 								   EV_ADD | EV_ENABLE, 0, 0, NULL );
 					change_events( change_list, client_socket, EVFILT_WRITE,
-								   EV_ADD | EV_ENABLE, 0, 0, NULL );
+								   EV_ADD | EV_DISABLE, 0, 0, NULL );
 					clients[client_socket] = "";
 				} else if ( clients.find( curr_event->ident ) !=
 							clients.end() ) {
@@ -148,13 +148,16 @@ int main() {
 								  << ": " << clients[curr_event->ident]
 								  << std::endl;
 					}
+					change_events( change_list, curr_event->ident, EVFILT_WRITE,
+								   EV_ENABLE, 0, 0, NULL );
+					change_events( change_list, curr_event->ident, EVFILT_READ,
+								   EV_DISABLE, 0, 0, NULL );
 				}
 			} else if ( curr_event->filter == EVFILT_WRITE ) {
 				/* send data to client */
 				std::map<int, std::string>::iterator it =
 					clients.find( curr_event->ident );
 				std::cout << "write" << std::endl;
-				usleep( 500000 );
 				if ( it != clients.end() ) {
 					if ( clients[curr_event->ident] != "" ) {
 						int n;
@@ -165,8 +168,12 @@ int main() {
 							std::cerr << "client write error!" << std::endl;
 							disconnect_client( curr_event->ident, clients );
 						} else {
-							// write( curr_event->ident, "ok", strlen( "ok" ) );
 							clients[curr_event->ident].clear();
+							change_events( change_list, curr_event->ident,
+										   EVFILT_WRITE, EV_DISABLE, 0, 0,
+										   NULL );
+							change_events( change_list, curr_event->ident,
+										   EVFILT_READ, EV_ENABLE, 0, 0, NULL );
 						}
 					}
 				}

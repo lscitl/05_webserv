@@ -22,7 +22,11 @@
 #define SOCK_READ 1
 #define HEAD_END_FLAG 2
 #define SOCK_WRITE 4
-// #define HEADER_PARED 16
+#define GET_RESPONSE 8
+#define HEAD_RESPONSE 16
+#define POST_RESPONSE 32
+#define PUT_RESPONSE 64
+#define DELETE_RESPONSE 128
 
 void error_exit( std::string err, int ( *func )( int ), int fd ) {
 	std::cerr << strerror( errno ) << std::endl;
@@ -74,21 +78,32 @@ typedef struct headerInfo {
 } t_header_info;
 
 std::string getNextCRLF( uintptr_t fd, t_header_info &buf ) {
-	size_t pos;
+	size_t      pos;
+	std::string tmp;
 
 	if ( buf.rsaved.size() ) {
 		pos = buf.rsaved.find( "\r\n" );
 		if ( pos != std::string::npos ) {
-			std::string tmp = buf.rsaved.substr( buf.rchecked, pos );
+			tmp = buf.rsaved.substr( buf.rchecked, pos );
 			buf.rchecked = pos + 2;
 			if ( tmp.size() == 0 ) {
 				buf.flag |= HEAD_END_FLAG;
 			}
 			return tmp;
 		}
+		buf.rsaved = buf.rsaved.erase( 0, buf.rchecked );
+		buf.rchecked = 0;
 		buf.flag |= SOCK_READ;
 	}
 	return "";
+}
+
+bool headerParsing( uintptr_t fd, t_header_info &buf ) {
+	std::string tmp;
+
+	while ( buf.flag & HEAD_END_FLAG == false ) {
+		// getNextCRLF
+	}
 }
 
 bool read_client_fd( uintptr_t fd, t_header_info &buf ) {
@@ -108,6 +123,25 @@ bool read_client_fd( uintptr_t fd, t_header_info &buf ) {
 }
 
 bool write_client_fd( uintptr_t fd, t_header_info &buf ) {
+}
+
+bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
+						  std::vector<struct kevent>         &changelist,
+						  std::map<uintptr_t, t_header_info> &clients ) {
+	uintptr_t client_fd;
+	if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
+		std::cerr << strerror( errno ) << std::endl;
+		return false;
+	} else {
+		std::cout << "accept new client: " << client_fd << std::endl;
+		fcntl( client_fd, F_SETFL, O_NONBLOCK );
+		add_event_change_list( changelist, client_fd, EVFILT_READ,
+							   EV_ADD | EV_ENABLE, 0, 0, NULL );
+		add_event_change_list( changelist, client_fd, EVFILT_WRITE,
+							   EV_ADD | EV_DISABLE, 0, 0, NULL );
+		clients[cur_event->ident];
+		return true;
+	}
 }
 
 int main( void ) {
@@ -181,54 +215,46 @@ int main( void ) {
 				}
 			} else if ( cur_event->filter == EVFILT_READ ) {
 				if ( cur_event->ident == serv_sd ) {
-					uintptr_t client_fd;
-					if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
-						std::cerr << strerror( errno ) << std::endl;
-					} else {
-						std::cout << "accept new client: " << client_fd
-								  << std::endl;
-						fcntl( client_fd, F_SETFL, O_NONBLOCK );
-						add_event_change_list( changelist, client_fd,
-											   EVFILT_READ, EV_ADD | EV_ENABLE,
-											   0, 0, NULL );
-						add_event_change_list(
-							changelist, client_fd, EVFILT_WRITE,
-							EV_ADD | EV_DISABLE, 0, 0, NULL );
-						clients[cur_event->ident];
-					};
+					if ( create_client_event( serv_sd, cur_event, changelist,
+											  clients ) == false ) {
+						//??
+					}
 				} else {
 					std::cout << "recieved data from " << cur_event->ident
 							  << ":" << std::endl;
-
-					std::string new_line;
-					do {
-						new_line = getNextCRLF( cur_event->ident );
-						std::cout << new_line << std::endl;
-					} while ( new_line != "" );
-
+					t_header_info *cur_buf;
+					read( cur_event->ident, cur_buf->rbuf, READ_BUF_SIZE );
 					add_event_change_list( changelist, cur_event->ident,
-										   EVFILT_WRITE, EV_ADD | EV_ENABLE, 0,
-										   0, NULL );
+										   EVFILT_WRITE, EV_ENABLE, 0, 0,
+										   NULL );
+					add_event_change_list( changelist, cur_event->ident,
+										   EVFILT_READ, EV_DISABLE, 0, 0,
+										   NULL );
 				}
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
 				std::cout << "sending response" << std::endl;
 
-				if ( clients[cur_event->ident].flag & SOCK_WRITE ) {
+				t_header_info *cur_buf = &clients[cur_event->ident];
+
+				headerParsing();
+				getNextCRLF( cur_event->ident, *cur_buf );
+
+				if ( cur_buf->flag & SOCK_WRITE ) {
 					int n;
-					n = write( cur_event->ident,
-							   clients[cur_event->ident].wsaved.c_str(),
-							   clients[cur_event->ident].wsaved.size() );
+					n = write( cur_event->ident, cur_buf->wsaved.c_str(),
+							   cur_buf->wsaved.size() );
 					if ( n < 0 ) {
 						// client error
-					} else if ( n > 0 ) {
+					} else if ( n != ) {
+						// partial write
 					}
-					// write( cur_event->ident, SERV_RESPONSE,
-					// 	   strlen( SERV_RESPONSE ) );
 				}
-				if ( clients[cur_event->ident].flag & SOCK_WRITE == 0 ) {
+				if ( cur_buf->flag & SOCK_WRITE == 0 ) {
 					add_event_change_list( changelist, cur_event->ident,
-										   EVFILT_WRITE, EV_ADD | EV_DISABLE, 0,
-										   0, NULL );
+										   EVFILT_WRITE, EV_DISABLE, 0, 0,
+										   NULL );
+					add_event_change_list( changelist, cur_event->ident,
+										   EVFILT_READ, EV_ENABLE, 0, 0, NULL );
 				}
 				std::cout << "sending response end" << std::endl;
 			}
@@ -236,57 +262,3 @@ int main( void ) {
 	}
 	return 0;
 }
-
-// class getHttpHeader {
-// }
-
-// struct header_buffer {
-// 	std::string saved;
-// 	size_t      read;
-// 	size_t      no_crlf_to;
-// };
-
-// std::string getNextCRLF( uintptr_t fd ) {
-// 	static struct header_buffer buf[1000000];
-// 	char                        strbuf[1024];
-// 	ssize_t                     n;
-// 	int                         pos;
-
-// 	if ( buf[fd].saved.size() &&
-// 		 buf[fd].saved.size() - 1 > buf[fd].no_crlf_to ) {
-// 		pos = buf[fd].saved.find( "\r\n" );
-// 		if ( pos != std::string::npos ) {
-// 			std::string tmp = buf[fd].saved.substr( buf[fd].no_crlf_to, pos
-// ); 			buf[fd].no_crlf_to = pos + 2; 			return tmp;
-// 		}
-// 		buf[fd].no_crlf_to = buf[fd].saved.size() - 2;
-// 	}
-// 	n = read( fd, strbuf, 1024 );
-// 	if ( n <= 0 ) {
-// 		std::string tmp = buf[fd].saved.substr( buf[fd].no_crlf_to, pos );
-// 		buf[fd].saved.clear();
-// 		return "";
-// 	} else if ( n == 0 ) {
-// 		buf[fd].saved.clear();
-// 		return "";
-// 	}
-// 	buf[fd].saved.append( strbuf, buf[fd].saved.size(), n );
-// 	return getNextCRLF( fd );
-// }
-
-// std::string getHeader( uintptr_t fd, std::string &body ) {
-// 	char    strbuf[10000];
-// 	ssize_t n;
-// 	size_t  pos;
-
-// 	n = read( fd, strbuf, 10000 );
-// 	if ( n < 0 ) {
-// 		std::cerr << "client error: " << fd << std::endl;
-// 		close( fd );
-// 		return "";
-// 	}
-// }
-
-// char **str_split(std::string &orgin, char *delim) {
-
-// }
