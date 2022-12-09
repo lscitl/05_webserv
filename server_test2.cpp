@@ -44,14 +44,14 @@ void add_event_change_list( std::vector<struct kevent> &changelist,
 	changelist.push_back( tmp_event );
 }
 
-void disconnect_client( int                                 client_fd,
-						std::map<uintptr_t, t_header_info> &clients ) {
+void disconnect_client( int                              client_fd,
+						std::map<uintptr_t, t_serv_buf> &clients ) {
 	std::cout << "client disconnected: " << client_fd << std::endl;
 	close( client_fd );
 	clients.erase( client_fd );
 }
 
-typedef struct headerInfo {
+typedef struct ServBuffer {
 	char                               rbuf[READ_BUF_SIZE];
 	std::string                        rsaved;
 	int                                rchecked;
@@ -62,7 +62,7 @@ typedef struct headerInfo {
 	int                                flag;
 	std::map<std::string, std::string> field;
 
-	headerInfo()
+	ServBuffer()
 		: rbuf(),
 		  rsaved(),
 		  rchecked( 0 ),
@@ -73,11 +73,11 @@ typedef struct headerInfo {
 		  flag( 0 ),
 		  field() {
 	}
-	~headerInfo() {
+	~ServBuffer() {
 	}
-} t_header_info;
+} t_serv_buf;
 
-std::string getNextCRLF( uintptr_t fd, t_header_info &buf ) {
+bool getNextCRLF( uintptr_t fd, t_serv_buf &buf ) {
 	size_t      pos;
 	std::string tmp;
 
@@ -88,25 +88,50 @@ std::string getNextCRLF( uintptr_t fd, t_header_info &buf ) {
 			buf.rchecked = pos + 2;
 			if ( tmp.size() == 0 ) {
 				buf.flag |= HEAD_END_FLAG;
+				return true;
 			}
-			return tmp;
 		}
 		buf.rsaved = buf.rsaved.erase( 0, buf.rchecked );
 		buf.rchecked = 0;
 		buf.flag |= SOCK_READ;
 	}
-	return "";
 }
 
-bool headerParsing( uintptr_t fd, t_header_info &buf ) {
+bool headerParsing( uintptr_t fd, t_serv_buf &buf ) {
 	std::string tmp;
+	size_t      pos;
 
 	while ( buf.flag & HEAD_END_FLAG == false ) {
-		// getNextCRLF
+		if ( buf.rsaved.size() ) {
+			pos = buf.rsaved.find( "\r\n" );
+			if ( pos != std::string::npos ) {
+				tmp = buf.rsaved.substr( buf.rchecked, pos );
+				buf.rchecked = pos + 2;
+				if ( tmp.size() == 0 ) {
+					buf.flag |= HEAD_END_FLAG;
+					break;
+				}
+				pos = tmp.find( ":" );
+				if ( pos != std::string::npos ) {
+					size_t pos2 = pos + 1;
+					while ( tmp[pos2] == ' ' ) {
+						++pos2;
+					}
+					buf.field[tmp.substr( 0, pos )] =
+						tmp.substr( pos2, tmp.size() - pos2 );
+				}
+				continue;
+			}
+			buf.rsaved = buf.rsaved.erase( 0, buf.rchecked );
+			buf.rchecked = 0;
+			buf.flag |= SOCK_READ;
+			return false;
+		}
+		return false;
 	}
 }
 
-bool read_client_fd( uintptr_t fd, t_header_info &buf ) {
+bool read_client_fd( uintptr_t fd, t_serv_buf &buf ) {
 	char    strbuf[8196];
 	ssize_t n;
 
@@ -122,12 +147,12 @@ bool read_client_fd( uintptr_t fd, t_header_info &buf ) {
 	return true;
 }
 
-bool write_client_fd( uintptr_t fd, t_header_info &buf ) {
+bool write_client_fd( uintptr_t fd, t_serv_buf &buf ) {
 }
 
 bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
-						  std::vector<struct kevent>         &changelist,
-						  std::map<uintptr_t, t_header_info> &clients ) {
+						  std::vector<struct kevent>      &changelist,
+						  std::map<uintptr_t, t_serv_buf> &clients ) {
 	uintptr_t client_fd;
 	if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
 		std::cerr << strerror( errno ) << std::endl;
@@ -135,11 +160,11 @@ bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
 	} else {
 		std::cout << "accept new client: " << client_fd << std::endl;
 		fcntl( client_fd, F_SETFL, O_NONBLOCK );
+		t_serv_buf *new_buf = new t_serv_buf();
 		add_event_change_list( changelist, client_fd, EVFILT_READ,
-							   EV_ADD | EV_ENABLE, 0, 0, NULL );
+							   EV_ADD | EV_ENABLE, 0, 0, new_buf );
 		add_event_change_list( changelist, client_fd, EVFILT_WRITE,
-							   EV_ADD | EV_DISABLE, 0, 0, NULL );
-		clients[cur_event->ident];
+							   EV_ADD | EV_DISABLE, 0, 0, new_buf );
 		return true;
 	}
 }
@@ -177,10 +202,10 @@ int main( void ) {
 		error_exit( "bind", close, serv_sd );
 	}
 
-	std::map<uintptr_t, t_header_info> clients;
-	std::vector<struct kevent>         changelist;
-	struct kevent                      eventlist[8];
-	int                                kq;
+	std::map<uintptr_t, t_serv_buf> clients;
+	std::vector<struct kevent>      changelist;
+	struct kevent                   eventlist[8];
+	int                             kq;
 
 	kq = kqueue();
 	if ( kq == -1 ) {
@@ -217,44 +242,41 @@ int main( void ) {
 				if ( cur_event->ident == serv_sd ) {
 					if ( create_client_event( serv_sd, cur_event, changelist,
 											  clients ) == false ) {
-						//??
+						// error ???
 					}
 				} else {
+					t_serv_buf *buf =
+						static_cast<t_serv_buf *>( cur_event->udata );
 					std::cout << "recieved data from " << cur_event->ident
 							  << ":" << std::endl;
-					t_header_info *cur_buf;
-					read( cur_event->ident, cur_buf->rbuf, READ_BUF_SIZE );
+
+					read( cur_event->ident, buf->rbuf, READ_BUF_SIZE );
 					add_event_change_list( changelist, cur_event->ident,
-										   EVFILT_WRITE, EV_ENABLE, 0, 0,
-										   NULL );
+										   EVFILT_WRITE, EV_ENABLE, 0, 0, buf );
 					add_event_change_list( changelist, cur_event->ident,
-										   EVFILT_READ, EV_DISABLE, 0, 0,
-										   NULL );
+										   EVFILT_READ, EV_DISABLE, 0, 0, buf );
 				}
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
 				std::cout << "sending response" << std::endl;
 
-				t_header_info *cur_buf = &clients[cur_event->ident];
+				t_serv_buf *buf = &clients[cur_event->ident];
 
-				headerParsing();
-				getNextCRLF( cur_event->ident, *cur_buf );
-
-				if ( cur_buf->flag & SOCK_WRITE ) {
+				if ( buf->flag & SOCK_WRITE ) {
 					int n;
-					n = write( cur_event->ident, cur_buf->wsaved.c_str(),
-							   cur_buf->wsaved.size() );
+					n = write( cur_event->ident, buf->wsaved.c_str(),
+							   buf->wsaved.size() );
 					if ( n < 0 ) {
 						// client error
 					} else if ( n != ) {
 						// partial write
 					}
 				}
-				if ( cur_buf->flag & SOCK_WRITE == 0 ) {
+				if ( buf->flag & SOCK_WRITE == 0 ) {
 					add_event_change_list( changelist, cur_event->ident,
 										   EVFILT_WRITE, EV_DISABLE, 0, 0,
-										   NULL );
+										   buf );
 					add_event_change_list( changelist, cur_event->ident,
-										   EVFILT_READ, EV_ENABLE, 0, 0, NULL );
+										   EVFILT_READ, EV_ENABLE, 0, 0, buf );
 				}
 				std::cout << "sending response end" << std::endl;
 			}

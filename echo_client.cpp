@@ -54,11 +54,11 @@ int main( int argc, char **argv ) {
 			"\r\nHEAD / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
 			"Go-http-client/1.1\r\nAccept-Encoding:"
 			"gzip\r\nasdfasdf\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nasdf\r\nHost:localhost:1234\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n";
+			"HEAD / HTTP/1.1\r\nHost: localhost:1234\r\n\r\n"
+			"HEAD / HTTP/1.1\r\nHost:       localhost:1234\r\n";
 
 		write( sock, message2, strlen( message2 ) );
 
