@@ -17,16 +17,18 @@
 #define SERV_RESPONSE                                                    \
 	"HTTP/1.1 200 KO\r\nContent-Type: text/plain\r\nTransfer-Encoding: " \
 	"chunked\r\n\r\n4\r\nghan\r\n6\r\njiskim\r\n8\r\nyongjule\r\n0\r\n\r\n"
-#define READ_BUF_SIZE 8 * 1024
+#define BUFFER_SIZE 16 * 1024
 
-#define SOCK_READ 1
-#define HEAD_END_FLAG 2
-#define SOCK_WRITE 4
-#define GET_RESPONSE 8
-#define HEAD_RESPONSE 16
-#define POST_RESPONSE 32
-#define PUT_RESPONSE 64
-#define DELETE_RESPONSE 128
+enum {
+	SOCK_READ = 1,
+	HEAD_END_FLAG = 2,
+	SOCK_WRITE = 4,
+	GET_RESPONSE = 8,
+	HEAD_RESPONSE = 16,
+	POST_RESPONSE = 32,
+	PUT_RESPONSE = 64,
+	DELETE_RESPONSE = 128
+};
 
 void error_exit( std::string err, int ( *func )( int ), int fd ) {
 	std::cerr << strerror( errno ) << std::endl;
@@ -44,115 +46,122 @@ void add_event_change_list( std::vector<struct kevent> &changelist,
 	changelist.push_back( tmp_event );
 }
 
-void disconnect_client( int                              client_fd,
-						std::map<uintptr_t, t_serv_buf> &clients ) {
+void disconnect_client( int                                client_fd,
+						std::map<uintptr_t, t_client_buf> &clients ) {
 	std::cout << "client disconnected: " << client_fd << std::endl;
 	close( client_fd );
 	clients.erase( client_fd );
 }
 
-typedef struct ServBuffer {
-	char                               rbuf[READ_BUF_SIZE];
-	std::string                        rsaved;
-	int                                rchecked;
-	char                               wbuf[READ_BUF_SIZE];
-	std::string                        wsaved;
-	int                                wchecked;
-	timespec                           timeout;
-	int                                flag;
-	std::map<std::string, std::string> field;
+typedef struct ClientBuffer {
+	char                               rbuf_[BUFFER_SIZE];
+	std::string                        rdsaved_;
+	int                                rdchecked_;
+	std::string                        response_;
+	int                                wrchecked_;
+	timespec                           timeout_;
+	int                                flag_;
+	std::map<std::string, std::string> field_;
 
-	ServBuffer()
-		: rbuf(),
-		  rsaved(),
-		  rchecked( 0 ),
-		  wbuf(),
-		  wsaved(),
-		  wchecked( 0 ),
-		  timeout(),
-		  flag( 0 ),
-		  field() {
+	ClientBuffer()
+		: rbuf_(),
+		  rdsaved_(),
+		  rdchecked_( 0 ),
+		  response_(),
+		  wrchecked_( 0 ),
+		  timeout_(),
+		  flag_( 0 ),
+		  field_() {
 	}
-	~ServBuffer() {
+	~ClientBuffer() {
 	}
-} t_serv_buf;
+} t_client_buf;
 
-bool getNextCRLF( uintptr_t fd, t_serv_buf &buf ) {
+bool getNextCRLF( uintptr_t fd, t_client_buf &buf ) {
 	size_t      pos;
 	std::string tmp;
 
-	if ( buf.rsaved.size() ) {
-		pos = buf.rsaved.find( "\r\n" );
+	if ( buf.rdsaved_.size() ) {
+		pos = buf.rdsaved_.find( "\r\n" );
 		if ( pos != std::string::npos ) {
-			tmp = buf.rsaved.substr( buf.rchecked, pos );
-			buf.rchecked = pos + 2;
+			tmp = buf.rdsaved_.substr( buf.rdchecked_, pos );
+			buf.rdchecked_ = pos + 2;
 			if ( tmp.size() == 0 ) {
-				buf.flag |= HEAD_END_FLAG;
+				buf.flag_ |= HEAD_END_FLAG;
 				return true;
 			}
 		}
-		buf.rsaved = buf.rsaved.erase( 0, buf.rchecked );
-		buf.rchecked = 0;
-		buf.flag |= SOCK_READ;
+		buf.rdsaved_ = buf.rdsaved_.erase( 0, buf.rdchecked_ );
+		buf.rdchecked_ = 0;
+		buf.flag_ |= SOCK_READ;
 	}
 }
 
-bool headerParsing( uintptr_t fd, t_serv_buf &buf ) {
+bool header_valid_check( std::string &key_val, size_t col_pos ) {
+	// check logic
+	return true;
+}
+
+bool header_parsing( uintptr_t fd, t_client_buf &buf ) {
 	std::string tmp;
 	size_t      pos;
 
-	while ( buf.flag & HEAD_END_FLAG == false ) {
-		if ( buf.rsaved.size() ) {
-			pos = buf.rsaved.find( "\r\n" );
+	while ( buf.flag_ & HEAD_END_FLAG == false ) {
+		if ( buf.rdsaved_.size() ) {
+			pos = buf.rdsaved_.find( "\r\n" );
 			if ( pos != std::string::npos ) {
-				tmp = buf.rsaved.substr( buf.rchecked, pos );
-				buf.rchecked = pos + 2;
+				tmp = buf.rdsaved_.substr( buf.rdchecked_, pos );
+				buf.rdchecked_ = pos + 2;
 				if ( tmp.size() == 0 ) {
-					buf.flag |= HEAD_END_FLAG;
+					buf.flag_ |= HEAD_END_FLAG;
 					break;
 				}
 				pos = tmp.find( ":" );
 				if ( pos != std::string::npos ) {
 					size_t pos2 = pos + 1;
-					while ( tmp[pos2] == ' ' ) {
-						++pos2;
+					// to do
+					if ( header_valid_check( tmp, pos ) ) {
+						while ( tmp[pos2] == ' ' ) {
+							++pos2;
+						}
+						buf.field_[tmp.substr( 0, pos )] =
+							tmp.substr( pos2, tmp.size() - pos2 );
 					}
-					buf.field[tmp.substr( 0, pos )] =
-						tmp.substr( pos2, tmp.size() - pos2 );
 				}
 				continue;
 			}
-			buf.rsaved = buf.rsaved.erase( 0, buf.rchecked );
-			buf.rchecked = 0;
-			buf.flag |= SOCK_READ;
+			buf.rdsaved_ = buf.rdsaved_.erase( 0, buf.rdchecked_ );
+			buf.rdchecked_ = 0;
+			buf.flag_ |= SOCK_READ;
 			return false;
 		}
 		return false;
 	}
+	return true;
 }
 
-bool read_client_fd( uintptr_t fd, t_serv_buf &buf ) {
+bool read_client_fd( uintptr_t fd, t_client_buf &buf ) {
 	char    strbuf[8196];
 	ssize_t n;
 
-	if ( buf.flag & SOCK_READ ) {
+	if ( buf.flag_ & SOCK_READ ) {
 		n = read( fd, strbuf, 1024 );
 		if ( n <= 0 ) {
 			// client error??
 			return false;
 		}
-		buf.rsaved.append( strbuf, buf.rsaved.size(), n );
+		buf.rdsaved_.append( strbuf, buf.rdsaved_.size(), n );
 		return true;
 	}
 	return true;
 }
 
-bool write_client_fd( uintptr_t fd, t_serv_buf &buf ) {
+bool write_client_fd( uintptr_t fd, t_client_buf &buf ) {
 }
 
 bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
-						  std::vector<struct kevent>      &changelist,
-						  std::map<uintptr_t, t_serv_buf> &clients ) {
+						  std::vector<struct kevent>        &changelist,
+						  std::map<uintptr_t, t_client_buf> &clients ) {
 	uintptr_t client_fd;
 	if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
 		std::cerr << strerror( errno ) << std::endl;
@@ -160,7 +169,7 @@ bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
 	} else {
 		std::cout << "accept new client: " << client_fd << std::endl;
 		fcntl( client_fd, F_SETFL, O_NONBLOCK );
-		t_serv_buf *new_buf = new t_serv_buf();
+		t_client_buf *new_buf = new t_client_buf();
 		add_event_change_list( changelist, client_fd, EVFILT_READ,
 							   EV_ADD | EV_ENABLE, 0, 0, new_buf );
 		add_event_change_list( changelist, client_fd, EVFILT_WRITE,
@@ -202,10 +211,10 @@ int main( void ) {
 		error_exit( "bind", close, serv_sd );
 	}
 
-	std::map<uintptr_t, t_serv_buf> clients;
-	std::vector<struct kevent>      changelist;
-	struct kevent                   eventlist[8];
-	int                             kq;
+	std::map<uintptr_t, t_client_buf> clients;
+	std::vector<struct kevent>        changelist;
+	struct kevent                     eventlist[8];
+	int                               kq;
 
 	kq = kqueue();
 	if ( kq == -1 ) {
@@ -245,12 +254,15 @@ int main( void ) {
 						// error ???
 					}
 				} else {
-					t_serv_buf *buf =
-						static_cast<t_serv_buf *>( cur_event->udata );
+					t_client_buf *buf =
+						static_cast<t_client_buf *>( cur_event->udata );
+					ssize_t n_read;
 					std::cout << "recieved data from " << cur_event->ident
 							  << ":" << std::endl;
-
-					read( cur_event->ident, buf->rbuf, READ_BUF_SIZE );
+					n_read = read( cur_event->ident, buf->rbuf_, BUFFER_SIZE );
+					if ( n_read < 0 ) {
+						continue;
+					}
 					add_event_change_list( changelist, cur_event->ident,
 										   EVFILT_WRITE, EV_ENABLE, 0, 0, buf );
 					add_event_change_list( changelist, cur_event->ident,
@@ -259,19 +271,19 @@ int main( void ) {
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
 				std::cout << "sending response" << std::endl;
 
-				t_serv_buf *buf = &clients[cur_event->ident];
+				t_client_buf *buf = &clients[cur_event->ident];
 
-				if ( buf->flag & SOCK_WRITE ) {
+				if ( buf->flag_ & SOCK_WRITE ) {
 					int n;
-					n = write( cur_event->ident, buf->wsaved.c_str(),
-							   buf->wsaved.size() );
+					n = write( cur_event->ident, buf->response_.c_str(),
+							   buf->response_.size() );
 					if ( n < 0 ) {
 						// client error
-					} else if ( n != ) {
+					} else if ( n != buf->response_.size() ) {
 						// partial write
 					}
 				}
-				if ( buf->flag & SOCK_WRITE == 0 ) {
+				if ( buf->flag_ & SOCK_WRITE == 0 ) {
 					add_event_change_list( changelist, cur_event->ident,
 										   EVFILT_WRITE, EV_DISABLE, 0, 0,
 										   buf );

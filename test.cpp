@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/uio.h>
+#include <string>
 
 // #define BUF_LEN 10
 // #define IOVEC_CNT 4
@@ -11,13 +12,15 @@ enum { BUF_LEN = 10, IOVEC_CNT = 4 };
 
 class ClientBuffer {
    private:
-	struct iovec *buf;
+	struct iovec *rbuf;
+	std::string   rsaved;
+	struct iovec *wbuf;
 
 	ClientBuffer() {
 		set_buffer( IOVEC_CNT, BUF_LEN );
 	}
 	~ClientBuffer() {
-		del_buffer( buf, IOVEC_CNT );
+		del_buffer( rbuf, IOVEC_CNT );
 	}
 };
 

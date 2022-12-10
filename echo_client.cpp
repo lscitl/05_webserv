@@ -56,9 +56,9 @@ int main( int argc, char **argv ) {
 			"gzip\r\nasdfasdf\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
+			"HEAD / HTTP/1.1\r\nHost:localh ost:1234\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost: localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:       localhost:1234\r\n";
+			"HEAD / HTTP/1.1\r\nHost:       localho   st:1234\r\n";
 
 		write( sock, message2, strlen( message2 ) );
 
