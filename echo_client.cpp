@@ -49,16 +49,13 @@ int main( int argc, char **argv ) {
 		// if ( !strcmp( message, "q\n" ) ) {
 		// 	break;
 		// }
-		sleep( 3 );
+		sleep( 1 );
 		char *message2 =
-			"\r\nHEAD / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
-			"Go-http-client/1.1\r\nAccept-Encoding:"
-			"gzip\r\nasdfasdf\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localh ost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost: localhost:1234\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:       localho   st:1234\r\n";
+			"\r\nGET / HTTP/1.1\r\nhOsT:localhost:1234\r\nUser-Agent: "
+			"Go-http-client/1.1\r\nasdfasdf\r\nContent-Length:13\r\n\r\n"
+			"asdfasdfasdfHEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
+			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
+			"Go-http-client/1.1 asdf\r\nasdfasdf\r\n\r\n";
 
 		write( sock, message2, strlen( message2 ) );
 
