@@ -49,11 +49,10 @@ int main( int argc, char **argv ) {
 		// if ( !strcmp( message, "q\n" ) ) {
 		// 	break;
 		// }
-		sleep( 1 );
+		// sleep( 1 );
 		char *message2 =
-			"\r\nGET / HTTP/1.1\r\nhOsT:localhost:1234\r\nUser-Agent: "
-			"Go-http-client/1.1\r\nasdfasdf\r\nContent-Length:13\r\n\r\n"
-			"asdfasdfasdfHEAD / HTTP/1.1\r\nHost:localhost:1234\r\n\r\n"
+			"GET / HTTP/0.9\r\nhOsT:localhost:1234\r\nUser-Agent: "
+			"Go-http-client/0.9\r\nasdfasdf\r\n\r\n"
 			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
 			"Go-http-client/1.1 asdf\r\nasdfasdf\r\n\r\n";
 
@@ -67,17 +66,17 @@ int main( int argc, char **argv ) {
 			message[str_len] = 0;
 			printf( "서버로부터 전송된 메시지 : %s \n", message );
 		}
-		message2 = "\r\n\r\n";
-		sleep( 3 );
-		write( sock, message2, strlen( message2 ) );
-		/* 메시지 수신 출력 */
-		std::cout << "print2" << std::endl;
-		sleep( 1 );
-		str_len = read( sock, message, BUFSIZE - 1 );
-		if ( str_len != -1 ) {
-			message[str_len] = 0;
-			printf( "서버로부터 전송된 메시지 : %s \n", message );
-		}
+		// message2 = "\r\n\r\n";
+		// sleep( 3 );
+		// write( sock, message2, strlen( message2 ) );
+		// /* 메시지 수신 출력 */
+		// std::cout << "print2" << std::endl;
+		// sleep( 1 );
+		// str_len = read( sock, message, BUFSIZE - 1 );
+		// if ( str_len != -1 ) {
+		// 	message[str_len] = 0;
+		// 	printf( "서버로부터 전송된 메시지 : %s \n", message );
+		// }
 	}
 	close( sock );
 	return 0;

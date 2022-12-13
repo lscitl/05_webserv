@@ -15,10 +15,11 @@
 
 #define SERV_PORT 1234
 #define SERV_SOCK_BACKLOG 10
+#define EVENT_CHANGE_BUF 10
 #define SERV_RESPONSE                                                    \
 	"HTTP/1.1 200 KO\r\nContent-Type: text/plain\r\nTransfer-Encoding: " \
 	"chunked\r\n\r\n4\r\nghan\r\n6\r\njiskim\r\n8\r\nyongjule\r\n0\r\n\r\n"
-#define BUFFER_SIZE 16 * 1024
+#define BUFFER_SIZE 8 * 1024
 
 enum {
 	SOCK_READ = 1,
@@ -52,12 +53,12 @@ void error_exit( std::string err, int ( *func )( int ), int fd ) {
 	exit( EXIT_FAILURE );
 }
 
-void add_event_change_list( std::vector<struct kevent> &changelist,
+void add_event_change_list( std::vector<struct kevent> &change_list,
 							uintptr_t ident, int64_t filter, uint16_t flags,
 							uint32_t fflags, intptr_t data, void *udata ) {
 	struct kevent tmp_event;
 	EV_SET( &tmp_event, ident, filter, flags, fflags, data, udata );
-	changelist.push_back( tmp_event );
+	change_list.push_back( tmp_event );
 }
 
 void disconnect_client( int                                client_fd,
@@ -149,14 +150,13 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 	std::string header_field_line;
 	size_t      crlf_pos;
 
-	while ( buf.flag_ & HEAD_END_FLAG == false ) {
-		// if ( buf.rdsaved_.size() ) {
+	while ( true ) {
 		crlf_pos = buf.rdsaved_.find( "\r\n" );
 		if ( crlf_pos != std::string::npos ) {
 			header_field_line = buf.rdsaved_.substr( buf.rdchecked_, crlf_pos );
 			buf.rdchecked_ = crlf_pos + 2;
 			if ( header_field_line.size() == 0 ) {
-				buf.flag_ |= HEAD_END_FLAG;
+				// buf.flag_ |= HEAD_END_FLAG;
 				break;
 			}
 			crlf_pos = header_field_line.find( ":" );
@@ -179,34 +179,26 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 		buf.rdchecked_ = 0;
 		buf.flag_ |= SOCK_READ;
 		return false;
-		// }
-		// return false;
 	}
-	buf.flag_ &= ~HEAD_END_FLAG;
+	// buf.flag_ &= ~HEAD_END_FLAG;
 	return true;
 }
 
-bool read_client_fd( uintptr_t fd, t_client_buf &buf ) {
-	char    strbuf[8196];
-	ssize_t n;
-
-	if ( buf.flag_ & SOCK_READ ) {
-		n = read( fd, strbuf, 1024 );
-		if ( n <= 0 ) {
-			// client error??
-			return false;
-		}
-		buf.rdsaved_.append( strbuf, buf.rdsaved_.size(), n );
-		return true;
-	}
-	return true;
-}
-
-bool write_client_fd( uintptr_t fd, t_client_buf &buf ) {
+// time out case?
+void disconnect_client( uintptr_t                   client_fd,
+						std::vector<struct kevent> &change_list,
+						t_client_buf               *buf ) {
+	// client status, tmp file...? check.
+	add_event_change_list( change_list, client_fd, EVFILT_READ, EV_DELETE, 0, 0,
+						   NULL );
+	add_event_change_list( change_list, client_fd, EVFILT_WRITE, EV_DELETE, 0,
+						   0, NULL );
+	close( client_fd );
+	delete buf;
 }
 
 bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
-						  std::vector<struct kevent>        &changelist,
+						  std::vector<struct kevent>        &change_list,
 						  std::map<uintptr_t, t_client_buf> &clients ) {
 	uintptr_t client_fd;
 	if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
@@ -216,16 +208,17 @@ bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
 		std::cout << "accept new client: " << client_fd << std::endl;
 		fcntl( client_fd, F_SETFL, O_NONBLOCK );
 		t_client_buf *new_buf = new t_client_buf();
-		add_event_change_list( changelist, client_fd, EVFILT_READ,
+		add_event_change_list( change_list, client_fd, EVFILT_READ,
 							   EV_ADD | EV_ENABLE, 0, 0, new_buf );
-		add_event_change_list( changelist, client_fd, EVFILT_WRITE,
+		add_event_change_list( change_list, client_fd, EVFILT_WRITE,
 							   EV_ADD | EV_DISABLE, 0, 0, new_buf );
 		return true;
 	}
 }
 
-int write_res( uintptr_t fd, t_res_field &res,
-			   std::vector<struct kevent> &changelist, t_client_buf *buf ) {
+int write_res_header( uintptr_t fd, t_res_field &res,
+					  std::vector<struct kevent> &change_list,
+					  t_client_buf               *buf ) {
 	int n;
 
 	n = write( fd, &res.res_header_.c_str()[res.sent_pos_],
@@ -245,7 +238,7 @@ int write_res( uintptr_t fd, t_res_field &res,
 			if ( fd < 0 ) {
 				// file open error. incorrect direction ??
 			}
-			add_event_change_list( changelist, fd, EVFILT_READ,
+			add_event_change_list( change_list, fd, EVFILT_READ,
 								   EV_ADD | EV_ENABLE, 0, 0, buf );
 			buf->flag_ |= RES_BODY;
 			buf->flag_ &= ~SOCK_WRITE;
@@ -255,7 +248,15 @@ int write_res( uintptr_t fd, t_res_field &res,
 	return n;
 }
 
-int main( void ) {
+int write_res_body( uintptr_t fd, t_res_field &res,
+					std::vector<struct kevent> &change_list,
+					t_client_buf               *buf ) {
+	int n;
+
+	n = write( fd, )
+}
+
+uintptr_t server_init() {
 	int                serv_sd;
 	struct sockaddr_in serv_addr;
 
@@ -270,10 +271,6 @@ int main( void ) {
 		error_exit( "setsockopt()", close, serv_sd );
 	}
 
-	// if ( fcntl( serv_sd, F_SETFL, O_NONBLOCK ) == -1 ) {
-	// 	error_exit( "fcntl()", close, serv_sd );
-	// }
-
 	memset( &serv_addr, 0, sizeof( serv_addr ) );
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_port = htons( SERV_PORT );
@@ -287,10 +284,13 @@ int main( void ) {
 	if ( listen( serv_sd, SERV_SOCK_BACKLOG ) == -1 ) {
 		error_exit( "bind", close, serv_sd );
 	}
+}
 
+int main( void ) {
+	uintptr_t                         serv_sd = server_init();
 	std::map<uintptr_t, t_client_buf> clients;
-	std::vector<struct kevent>        changelist;
-	struct kevent                     eventlist[8];
+	std::vector<struct kevent>        change_list;
+	struct kevent                     event_list[8];
 	int                               kq;
 
 	kq = kqueue();
@@ -298,24 +298,24 @@ int main( void ) {
 		error_exit( "kqueue()", close, serv_sd );
 	}
 
-	add_event_change_list( changelist, serv_sd, EVFILT_READ, EV_ADD | EV_ENABLE,
-						   0, 0, NULL );
+	add_event_change_list( change_list, serv_sd, EVFILT_READ,
+						   EV_ADD | EV_ENABLE, 0, 0, NULL );
 
 	int            event_len;
 	struct kevent *cur_event;
-	int            l = 0;
+	// int            l = 0;
 	while ( true ) {
-		event_len = kevent( kq, changelist.begin().base(), changelist.size(),
-							eventlist, 8, NULL );
+		event_len = kevent( kq, change_list.begin().base(), change_list.size(),
+							event_list, 8, NULL );
 		if ( event_len == -1 ) {
 			error_exit( "kevent()", close, serv_sd );
 		}
-		changelist.clear();
+		change_list.clear();
 
 		// std::cout << "current loop: " << l++ << std::endl;
 
 		for ( int i = 0; i < event_len; ++i ) {
-			cur_event = &eventlist[i];
+			cur_event = &event_list[i];
 
 			if ( cur_event->flags & EV_ERROR ) {
 				if ( cur_event->ident == serv_sd ) {
@@ -326,7 +326,7 @@ int main( void ) {
 				}
 			} else if ( cur_event->filter == EVFILT_READ ) {
 				if ( cur_event->ident == serv_sd ) {
-					if ( create_client_event( serv_sd, cur_event, changelist,
+					if ( create_client_event( serv_sd, cur_event, change_list,
 											  clients ) == false ) {
 						// error ???
 					}
@@ -367,9 +367,9 @@ int main( void ) {
 						default:
 							break;
 					}
-					add_event_change_list( changelist, cur_event->ident,
+					add_event_change_list( change_list, cur_event->ident,
 										   EVFILT_WRITE, EV_ENABLE, 0, 0, buf );
-					add_event_change_list( changelist, cur_event->ident,
+					add_event_change_list( change_list, cur_event->ident,
 										   EVFILT_READ, EV_DISABLE, 0, 0, buf );
 				}
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
@@ -377,25 +377,24 @@ int main( void ) {
 
 				t_client_buf *buf = (t_client_buf *)cur_event->udata;
 
-				if ( buf->flag_ & SOCK_WRITE ) {
-					int total_write = 0;
-					while ( total_write < BUFFER_SIZE &&
-							buf->req_res_queue_.size() != 0 ) {
-						int n;
-						n = write_res( cur_event->ident,
-									   buf->req_res_queue_.front().second,
-									   changelist, buf );
-						total_write += n;
+				if ( buf->flag_ & RES_BODY ) {
+					write_res_body( cur_event->ident,
+									buf->req_res_queue_.front().second,
+									change_list, buf );
+				} else {
+					if ( write_res_header( cur_event->ident,
+										   buf->req_res_queue_.front().second,
+										   change_list, buf ) < 0 ) {
+						// error
 					}
 					if ( buf->req_res_queue_.size() == 0 ) {
-						add_event_change_list( changelist, cur_event->ident,
+						add_event_change_list( change_list, cur_event->ident,
 											   EVFILT_WRITE, EV_DISABLE, 0, 0,
 											   buf );
 					}
-				} else if ( buf->flag_ & RES_BODY ) {
 				}
 				if ( buf->flag_ & SOCK_WRITE == false ) {
-					add_event_change_list( changelist, cur_event->ident,
+					add_event_change_list( change_list, cur_event->ident,
 										   EVFILT_WRITE, EV_DISABLE, 0, 0,
 										   buf );
 				}
