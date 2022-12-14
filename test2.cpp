@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
 
 // void write_inf( int fd ) {
 // 	char *str = "asdfzxcvqwer12345";
@@ -33,10 +34,10 @@
 // 	} else {
 // 		// parent read
 // 		close( p[1] );
-// 		// sleep( 5 );
+// 		sleep( 5 );
 // 		while ( 1 ) {
 // 			n = read( p[0], buf, 1024 );
-// 			if ( tmp > 100000 ) {
+// 			if ( tmp > 120000 ) {
 // 				break;
 // 			}
 // 			if ( n != -1 ) {
@@ -45,7 +46,6 @@
 // 		}
 // 		waitpid( pid, NULL, 0 );
 // 	}
-
 // }
 
 #include <string>
@@ -63,6 +63,7 @@ int main( void ) {
 	b[4] = '\0';
 	b[10] = '\0';
 	vec.insert( vec.end(), b, b + 20 );
+
 	str.append( b, 0, 20 );
 	for ( std::vector<char>::iterator it = vec.begin(); it != vec.end();
 		  ++it ) {
