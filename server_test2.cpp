@@ -21,30 +21,29 @@
 
 typedef std::vector<char> t_buffer;
 
-enum {
-	HEAD_END_FLAG = 2,
-	SOCK_WRITE = 4,
-	RES_GET = 8,
-	RES_HEAD = 16,
-	RES_POST = 32,
-	RES_PUT = 64,
-	RES_DELETE = 128,
-	READ_BODY = 256,
-	REQ_LINE_PARSED = 512,
-	RES_BODY = 1024,
-	NONE = 0
-};
-
-enum { REQ_LINE_PARSING = 0, REQ_HEADER_PARSING = 1, REQ_BODY = 2 };
-
-enum {
+enum e_client_buffer_flag {
 	REQ_GET = 1,
 	REQ_HEAD = 2,
 	REQ_POST = 4,
 	REQ_PUT = 8,
 	REQ_DELETE = 16,
-	REQ_UNDEFINED = 32
+	REQ_UNDEFINED = 32,
+	SOCK_WRITE = 64,
+	READ_BODY = 256,
+	RES_BODY = 1024,
+	E_BAD_REQ = 1 << 31,
+	NONE = 0
 };
+
+enum e_read_status {
+	REQ_LINE_PARSING = 0,
+	REQ_HEADER_PARSING,
+	REQ_BODY,
+	RES_BODY,
+};
+
+// gzip & deflate are not implemented.
+enum { TE_CHUNKED = 0, TE_GZIP, TE_DEFLATE };
 
 void error_exit( std::string err, int ( *func )( int ), int fd ) {
 	std::cerr << strerror( errno ) << std::endl;
@@ -62,20 +61,27 @@ void add_event_change_list( std::vector<struct kevent> &change_list,
 	change_list.push_back( tmp_event );
 }
 
-void disconnect_client( int                                client_fd,
-						std::map<uintptr_t, t_client_buf> &clients ) {
-	std::cout << "client disconnected: " << client_fd << std::endl;
-	close( client_fd );
-	clients.erase( client_fd );
-}
-
 typedef struct ReqField {
+	std::map<std::string, std::string> field_;
+	t_buffer                           req_body_;
 	std::string                        req_target_;
 	std::string                        http_ver_;
-	std::map<std::string, std::string> field_;
+	size_t                             body_recieved_;
+	size_t                             body_limit_;
+	size_t                             content_length_;
+	int                                body_flag_;
 	int                                req_type_;
 
-	ReqField() : req_target_(), http_ver_(), field_(), req_type_( 0 ) {
+	ReqField()
+		: field_(),
+		  req_body_(),
+		  req_target_(),
+		  http_ver_(),
+		  body_recieved_( 0 ),
+		  body_limit_( -1 ),
+		  content_length_( 0 ),
+		  body_flag_( 0 ),
+		  req_type_( 0 ) {
 	}
 	~ReqField() {
 	}
@@ -123,25 +129,23 @@ typedef struct ClientBuffer {
 	}
 	~ClientBuffer() {
 	}
+
 } t_client_buf;
 
 bool request_line_check( std::string &req_line, t_client_buf &buf ) {
 	return true;
 }
 
-int request_line_parser( uintptr_t fd, t_client_buf &buf ) {
+bool request_line_parser( uintptr_t fd, t_client_buf &buf ) {
 	std::string              req_line;
 	t_buffer::const_iterator crlf_pos;
 
 	while ( true ) {
-		// if ( buf.rdsaved_.size() ) {
-		// crlf_pos = strnstr( buf.rdsaved_.data(), "\r\n", buf.rdsaved_.size()
-		// );
 		crlf_pos = std::find( buf.rdsaved_.begin(), buf.rdsaved_.end(), '\r' );
 		if ( crlf_pos != buf.rdsaved_.end() ) {
 			if ( *( crlf_pos + 1 ) != '\n' ) {
-				// bad request
-				return -1;
+				buf.flag_ |= E_BAD_REQ;
+				return false;
 			}
 			req_line.assign( buf.rdsaved_.data(), buf.rdchecked_,
 							 crlf_pos - buf.rdsaved_.begin() - buf.rdchecked_ );
@@ -152,10 +156,9 @@ int request_line_parser( uintptr_t fd, t_client_buf &buf ) {
 			}
 			buf.req_res_queue_.push( std::pair<t_req_field, t_res_field>() );
 			if ( request_line_check( req_line, buf ) == false ) {
-				// bad request
-				return -1;
+				buf.flag_ |= E_BAD_REQ;
+				return false;
 			}
-			// buf.flag_ |= REQ_LINE_PARSED;
 			break;
 		}
 		buf.rdsaved_.erase( buf.rdsaved_.begin(),
@@ -180,7 +183,7 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 		crlf_pos = std::find( buf.rdsaved_.begin(), buf.rdsaved_.end(), '\r' );
 		if ( crlf_pos != buf.rdsaved_.end() ) {
 			if ( *( crlf_pos + 1 ) != '\n' ) {
-				// bad request
+				buf.flag_ |= E_BAD_REQ;
 				return false;
 			}
 			header_field_line.assign(
@@ -189,12 +192,7 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 			buf.rdchecked_ = crlf_pos - buf.rdsaved_.begin() + 2;
 			if ( header_field_line.size() == 0 ) {
 				// request header parsed.
-				if ( buf.req_res_queue_.back().first.req_type_ &
-					 ( REQ_POST | REQ_PUT ) ) {
-					buf.state_ = REQ_BODY;
-				}
 				break;
-				// buf.flag_ |= HEAD_END_FLAG;
 			}
 			idx = header_field_line.find( ':' );
 			if ( idx != std::string::npos ) {
@@ -210,7 +208,7 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 						header_field_line.substr(
 							tmp, header_field_line.size() - tmp );
 				} else {
-					// bad request.
+					buf.flag_ |= E_BAD_REQ;
 					return false;
 				}
 			}
@@ -221,7 +219,21 @@ bool header_field_parser( uintptr_t fd, t_client_buf &buf ) {
 		buf.rdchecked_ = 0;
 		return false;
 	}
-	// buf.flag_ &= ~HEAD_END_FLAG;
+	const std::map<std::string, std::string> *field =
+		&buf.req_res_queue_.back().first.field_;
+	std::map<std::string, std::string>::const_iterator it;
+	it = field->find( "content-length" );
+	if ( it != field->end() ) {
+		buf.req_res_queue_.back().first.content_length_ =
+			strtoul( ( it->second ).c_str(), NULL, 10 );
+		buf.state_ = REQ_BODY;
+	}
+	it = field->find( "transfer-encoding" );
+	if ( it != field->end() &&
+		 it->second.find( "chunked" ) != std::string::npos ) {
+		buf.req_res_queue_.back().first.body_flag_ |= TE_CHUNKED;
+		buf.state_ = REQ_BODY;
+	}
 	return true;
 }
 
@@ -239,8 +251,7 @@ void disconnect_client( uintptr_t                   client_fd,
 }
 
 bool create_client_event( uintptr_t serv_sd, struct kevent *cur_event,
-						  std::vector<struct kevent>        &change_list,
-						  std::map<uintptr_t, t_client_buf> &clients ) {
+						  std::vector<struct kevent> &change_list ) {
 	uintptr_t client_fd;
 	if ( ( client_fd = accept( serv_sd, NULL, NULL ) ) == -1 ) {
 		std::cerr << strerror( errno ) << std::endl;
@@ -298,7 +309,7 @@ int write_res_body( uintptr_t fd, std::vector<struct kevent> &change_list,
 	if ( buf->req_res_queue_.front().second.transfer_encoding_ ) {
 		// chunked code.
 	} else {
-		n = write( fd, buf->rbuf_, buf->)
+		// n = write( fd, buf->rbuf_, buf->)
 	}
 }
 
@@ -332,23 +343,21 @@ uintptr_t server_init() {
 	}
 }
 
-void ev_read( uintptr_t serv_sd, struct kevent *cur_event,
-			  std::vector<struct kevent>        &change_list,
-			  std::map<uintptr_t, t_client_buf> &clients ) {
+void read_event_handler( uintptr_t serv_sd, struct kevent *cur_event,
+						 std::vector<struct kevent> &change_list ) {
 	if ( cur_event->ident == serv_sd ) {
-		if ( create_client_event( serv_sd, cur_event, change_list, clients ) ==
-			 false ) {
+		if ( create_client_event( serv_sd, cur_event, change_list ) == false ) {
 			// error ???
 		}
 	} else {
 		t_client_buf *buf = static_cast<t_client_buf *>( cur_event->udata );
 		ssize_t       n_read;
-		// std::cout << "recieved data from " << cur_event->ident
-		// 		  << ":" << std::endl;
 
-		if ( buf->state_ != REQ_BODY ||
-			 buf->req_res_queue_.front().second.body_buffer_.size() <
-				 BUFFER_MAX ) {
+		// REQ_BODY, RES_BODY check...
+		if ( buf->state_ & ~( REQ_BODY | RES_BODY ) ||
+			 ( buf->state_ & RES_BODY &&
+			   buf->req_res_queue_.front().second.body_buffer_.size() <
+				   BUFFER_MAX ) ) {
 			n_read = read( cur_event->ident, buf->rbuf_, BUFFER_SIZE );
 		}
 		if ( n_read < 0 ) {
@@ -366,12 +375,19 @@ void ev_read( uintptr_t serv_sd, struct kevent *cur_event,
 			case REQ_HEADER_PARSING:
 				if ( header_field_parser( cur_event->ident, *buf ) == false ) {
 					// need to read more from the client socket.
+					return;
+				}
+				if ( buf->state_ | REQ_BODY ) {
+					break;
 				}
 			case REQ_BODY:
+				break;
+			case RES_BODY:
 				t_buffer::const_iterator ite =
 					buf->req_res_queue_.front().second.body_buffer_.end();
 				buf->req_res_queue_.front().second.body_buffer_.insert(
 					ite, buf->rbuf_, buf->rbuf_ + n_read );
+				break;
 		}
 		switch ( buf->req_res_queue_.back().first.req_type_ ) {
 			case REQ_GET:
@@ -431,84 +447,20 @@ int main( void ) {
 				if ( cur_event->ident == serv_sd ) {
 					error_exit( "server socket error", close, serv_sd );
 				} else {
+					t_client_buf *buf =
+						static_cast<t_client_buf *>( cur_event->udata );
 					std::cerr << "client socket error" << std::endl;
-					disconnect_client( cur_event->ident, clients );
+					disconnect_client( cur_event->ident, change_list, buf );
 				}
 			} else if ( cur_event->filter == EVFILT_READ ) {
-				// if ( cur_event->ident == serv_sd ) {
-				// 	if ( create_client_event( serv_sd, cur_event, change_list,
-				// 							  clients ) == false ) {
-				// 		// error ???
-				// 	}
-				// } else {
-				// 	t_client_buf *buf =
-				// 		static_cast<t_client_buf *>( cur_event->udata );
-				// 	ssize_t n_read;
-				// 	// std::cout << "recieved data from " << cur_event->ident
-				// 	// 		  << ":" << std::endl;
-
-				// 	if ( buf->state_ != REQ_BODY ||
-				// 		 buf->req_res_queue_.front()
-				// 				 .second.body_buffer_.size() < BUFFER_MAX ) {
-				// 		n_read =
-				// 			read( cur_event->ident, buf->rbuf_, BUFFER_SIZE );
-				// 	}
-				// 	if ( n_read < 0 ) {
-				// 		continue;
-				// 	}
-				// 	if ( buf->state_ != REQ_BODY ) {
-				// 		buf->rdsaved_.insert( buf->rdsaved_.end(), buf->rbuf_,
-				// 							  buf->rbuf_ + n_read );
-				// 	}
-				// 	switch ( buf->state_ ) {
-				// 		case REQ_LINE_PARSING:
-				// 			if ( request_line_parser( cur_event->ident,
-				// 									  *buf ) == false ) {
-				// 				continue;
-				// 			}
-				// 		case REQ_HEADER_PARSING:
-				// 			if ( header_field_parser( cur_event->ident,
-				// 									  *buf ) == false ) {
-				// 				// need to read more from the client socket.
-				// 			}
-				// 		case REQ_BODY:
-				// 			t_buffer::const_iterator ite =
-				// 				buf->req_res_queue_.front()
-				// 					.second.body_buffer_.end();
-				// 			buf->req_res_queue_.front()
-				// 				.second.body_buffer_.insert(
-				// 					ite, buf->rbuf_, buf->rbuf_ + n_read );
-				// 	}
-				// 	switch ( buf->req_res_queue_.back().first.req_type_ ) {
-				// 		case REQ_GET:
-				// 			break;
-				// 		case REQ_HEAD:
-				// 			break;
-				// 		case REQ_POST:
-				// 			break;
-				// 		case REQ_PUT:
-				// 			break;
-				// 		case REQ_DELETE:
-				// 			break;
-				// 		case REQ_UNDEFINED:
-				// 			break;
-				// 		default:
-				// 			break;
-				// 	}
-				// 	add_event_change_list( change_list, cur_event->ident,
-				// 						   EVFILT_WRITE, EV_ENABLE, 0, 0, buf );
-				// 	// add_event_change_list( change_list, cur_event->ident,
-				// 	// 					   EVFILT_READ, EV_DISABLE, 0, 0, buf );
-				// }
+				read_event_handler( serv_sd, cur_event, change_list );
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
 				// std::cout << "sending response" << std::endl;
 
 				t_client_buf *buf = (t_client_buf *)cur_event->udata;
 
 				if ( buf->flag_ & RES_BODY ) {
-					write_res_body( cur_event->ident,
-									buf->req_res_queue_.front().second,
-									change_list, buf );
+					write_res_body( cur_event->ident, change_list, buf );
 				} else {
 					if ( write_res_header( cur_event->ident,
 										   buf->req_res_queue_.front().second,

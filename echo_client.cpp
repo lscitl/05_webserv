@@ -51,10 +51,14 @@ int main( int argc, char **argv ) {
 		// }
 		// sleep( 1 );
 		char *message2 =
-			"GET / HTTP/0.9\r\nhOsT:localhost:1234\r\nUser-Agent: "
-			"Go-http-client/0.9\r\nasdfasdf\r\n\r\n"
-			"HEAD / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
-			"Go-http-client/1.1 asdf\r\nasdfasdf\r\n\r\n";
+			"GET / HTTP/1.9\r\nhOsT:localhost:1234\r\nUser-Agent: "
+			"Go-http-client/0.9\r\nasdfasdf\r\n"
+			"Content-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n"
+			"4\r\nWiki\r\n6\r\npedia \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n"
+			"POST / HTTP/1.1\r\nHost:localhost:1234\r\nUser-Agent: "
+			"Go-http-client/1.1\r\nContent-Type: "
+			"text/plain\r\nTransfer-Encoding: chunked\r\n\r\n"
+			"4\r\nWiki\r\n6\r\npedia \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n";
 
 		write( sock, message2, strlen( message2 ) );
 
