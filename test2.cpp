@@ -53,25 +53,19 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <vector>
+#include <fcntl.h>
 
 int main( void ) {
-	std::vector<char> vec;
-	std::string       str;
-	char              b[20];
+	char buf[5];
+	int  fd = open( "asdf", O_RDONLY | O_CREAT | O_NONBLOCK, 0644 );
 
-	strcpy( b, "sdfzxcvzxcvzxcvwqer" );
-	b[4] = '\0';
-	b[10] = '\0';
-	vec.insert( vec.end(), b, b + 20 );
+	printf( "%d\n", fd );
+	read( fd, buf, 5 );
+	write( STDOUT_FILENO, buf, 5 );
 
-	str.append( b, 0, 20 );
-	for ( std::vector<char>::iterator it = vec.begin(); it != vec.end();
-		  ++it ) {
-		std::cout << *it;
-	}
-	std::cout << std::endl;
-	for ( std::string::iterator it = str.begin(); it != str.end(); ++it ) {
-		std::cout << *it;
-	}
-	std::cout << std::endl;
+	printf( "%lu\n", lseek( fd, 0, SEEK_CUR ) );
+
+	read( fd, buf, 5 );
+	write( STDOUT_FILENO, buf, 5 );
+	printf( "%lu\n", lseek( fd, 0, SEEK_CUR ) );
 }
