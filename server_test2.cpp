@@ -12,12 +12,14 @@
 #include <vector>
 #include <queue>
 #include <map>
+#include <algorithm>
 
 #define SERV_PORT 1234
 #define SERV_SOCK_BACKLOG 10
 #define EVENT_CHANGE_BUF 10
 #define BUFFER_SIZE 8 * 1024
 #define WRITE_BUFFER_MAX 40 * 1024
+#define MAX_EVENT_LOOP 20
 // #define BUFFER_MAX 80 * 1024
 
 typedef std::vector<char> t_buffer;
@@ -32,6 +34,7 @@ enum e_client_buffer_flag {
 	SOCK_WRITE = 128,
 	READ_BODY = 256,
 	RES_BODY = 1024,
+	RDBUF_CHECKED = 1 << 24,
 	READ_READY = 1 << 30,
 	E_BAD_REQ = 1 << 31
 };
@@ -42,6 +45,8 @@ enum e_read_status {
 	REQ_BODY,
 	RES_BODY,
 };
+
+enum e_write_flag { FILE_OPEN = 1, WRITE_READY = 2 };
 
 // gzip & deflate are not implemented.
 enum { TE_CHUNKED = 0, TE_GZIP, TE_DEFLATE };
@@ -73,6 +78,7 @@ typedef struct ReqField {
 	size_t                             content_length_;
 	int                                body_flag_;
 	int                                req_type_;
+	int                                transfer_encoding_;
 
 	ReqField()
 		: field_(),
@@ -84,7 +90,8 @@ typedef struct ReqField {
 		  body_limit_( -1 ),
 		  content_length_( 0 ),
 		  body_flag_( 0 ),
-		  req_type_( 0 ) {
+		  req_type_( 0 ),
+		  transfer_encoding_( 0 ) {
 	}
 	~ReqField() {
 	}
@@ -113,21 +120,21 @@ typedef struct ResField {
 } t_res_field;
 
 typedef struct ClientBuffer {
+	char                                             rdbuf_[BUFFER_SIZE];
 	std::queue<std::pair<t_req_field, t_res_field> > req_res_queue_;
 	t_buffer                                         rdsaved_;
 	timespec                                         timeout_;
 	uintptr_t                                        client_fd;
-	char                                             rdbuf_[BUFFER_SIZE];
 	int                                              rdchecked_;
 	int                                              flag_;
 	int                                              state_;
 
 	ClientBuffer()
-		: req_res_queue_(),
+		: rdbuf_(),
+		  req_res_queue_(),
 		  rdsaved_(),
 		  timeout_(),
 		  client_fd(),
-		  rdbuf_(),
 		  rdchecked_( 0 ),
 		  flag_( 0 ),
 		  state_( REQ_LINE_PARSING ) {
@@ -294,14 +301,14 @@ int write_res_header( uintptr_t fd, t_res_field &res,
 	} else {
 		// header sent
 		if ( res.body_flag_ ) {
-			int fd = open( res.file_path_.c_str(), O_RDONLY, 0644 );
-			if ( fd < 0 ) {
-				// file open error. incorrect direction ??
-			}
-			add_event_change_list( change_list, buf->client_fd, EVFILT_READ,
-								   EV_DISABLE, 0, 0, buf );
-			add_event_change_list( change_list, fd, EVFILT_READ,
-								   EV_ADD | EV_ENABLE, 0, 0, buf );
+			// int fd = open( res.file_path_.c_str(), O_RDONLY, 0644 );
+			// if ( fd < 0 ) {
+			// 	// file open error. incorrect direction ??
+			// }
+			// add_event_change_list( change_list, buf->client_fd, EVFILT_READ,
+			// 					   EV_DISABLE, 0, 0, buf );
+			// add_event_change_list( change_list, fd, EVFILT_READ,
+			// 					   EV_ADD | EV_ENABLE, 0, 0, buf );
 			buf->flag_ |= RES_BODY;
 			buf->flag_ &= ~SOCK_WRITE;
 		} else {
@@ -311,13 +318,22 @@ int write_res_header( uintptr_t fd, t_res_field &res,
 	return n;
 }
 
-int write_res_body( uintptr_t fd, std::vector<struct kevent> &change_list,
-					t_client_buf *buf ) {
-	int n;
-	if ( buf->req_res_queue_.front().second.transfer_encoding_ == TE_CHUNKED ) {
-		// chunked code.
-	} else {
-		// n = write( fd, buf->rdbuf_, buf->)
+void write_res_body( uintptr_t fd, t_res_field &res,
+					 std::vector<struct kevent> &change_list,
+					 t_client_buf               *buf ) {
+	// no chunked case.
+	int n_write;
+	n_write = write( fd, &res.body_buffer_[res.sent_pos_],
+					 std::min( (size_t)WRITE_BUFFER_MAX,
+							   res.body_buffer_.size() - res.sent_pos_ ) );
+	res.sent_pos_ += n_write;
+	res.content_length_ -= n_write;
+	if ( res.body_buffer_.size() == res.sent_pos_ ) {
+		res.body_buffer_.clear();
+		res.sent_pos_ = 0;
+	}
+	if ( res.content_length_ == 0 ) {
+		buf->state_ &= ~( RES_BODY );
 	}
 }
 
@@ -359,120 +375,162 @@ void read_event_handler( uintptr_t serv_sd, struct kevent *cur_event,
 			// error ???
 		}
 	} else {
+		int           n_read;
 		t_client_buf *buf = static_cast<t_client_buf *>( cur_event->udata );
-		ssize_t       n_read;
 
-		// REQ_BODY, RES_BODY check...?
-		// if ( buf->state_ < REQ_BODY ||
-		// 	 ( buf->state_ == RES_BODY &&
-		// 	   buf->req_res_queue_.front().second.body_buffer_.size() <
-		// 		   BUFFER_MAX ) ) {
-		// }
 		n_read = read( cur_event->ident, buf->rdbuf_, BUFFER_SIZE );
 		if ( n_read < 0 ) {
+			// error handle
 			return;
 		}
 		buf->flag_ &= ~READ_READY;
 		if ( buf->state_ != RES_BODY ) {
 			buf->rdsaved_.insert( buf->rdsaved_.end(), buf->rdbuf_,
 								  buf->rdbuf_ + n_read );
+		} else {
+			buf->req_res_queue_.back().second.body_buffer_.insert(
+				buf->req_res_queue_.back().second.body_buffer_.end(),
+				buf->rdbuf_, buf->rdbuf_ + n_read );
 		}
 		while ( buf->flag_ & READ_READY == false ) {
-			switch ( buf->state_ ) {
-				case REQ_LINE_PARSING:
-					if ( buf->request_line_parser() == false ) {
-						buf->flag_ &= READ_READY;
-						break;
-					}
-				case REQ_HEADER_PARSING:
-					if ( buf->header_field_parser() == false ) {
-						// need to read more from the client socket.
-						buf->flag_ &= READ_READY;
-						break;
-					}
-					switch ( buf->req_res_queue_.back().first.req_type_ ) {
-						case REQ_GET:
-							break;
-						case REQ_HEAD:
-							break;
-						case REQ_POST:
-							if ( buf->req_res_queue_.back().first.body_flag_ ) {
-								uintptr_t fd = open(
-									buf->req_res_queue_.back()
-										.first.file_path_.c_str(),
-									O_RDONLY | O_CREAT | O_NONBLOCK | O_APPEND,
-									0644 );
-								if ( fd < 0 ) {
-									// open error
-								}
-								add_event_change_list(
-									change_list, cur_event->ident, EVFILT_READ,
-									EV_DISABLE, 0, 0, buf );
-								add_event_change_list(
-									change_list, fd, EVFILT_READ,
-									EV_ADD | EV_ENABLE, 0, 0, buf );
-							} else {
-								// maybe error?
-							}
-							break;
-						case REQ_PUT:
-							if ( buf->req_res_queue_.back().first.body_flag_ ) {
-								uintptr_t fd = open(
-									buf->req_res_queue_.back()
-										.first.file_path_.c_str(),
-									O_RDONLY | O_CREAT | O_NONBLOCK | O_TRUNC,
-									0644 );
-								if ( fd < 0 ) {
-									// open error
-								}
-								add_event_change_list(
-									change_list, cur_event->ident, EVFILT_READ,
-									EV_DISABLE, 0, 0, buf );
-								add_event_change_list(
-									change_list, fd, EVFILT_READ,
-									EV_ADD | EV_ENABLE, 0, 0, buf );
-							} else {
-								// maybe error?
-							}
-							break;
-						case REQ_DELETE:
-							break;
-						case REQ_UNDEFINED:
-							break;
-						default:
-							break;
-					}
-				case REQ_BODY:
-					// client socket
-
-					break;
-				case RES_BODY:
-					// server file descriptor.
-					t_buffer::const_iterator ite =
-						buf->req_res_queue_.front().second.body_buffer_.end();
-					buf->req_res_queue_.front().second.body_buffer_.insert(
-						ite, buf->rdbuf_, buf->rdbuf_ + n_read );
-
-					// file end check.
-					if ( lseek( cur_event->ident, 0, SEEK_CUR ) ==
-						 buf->req_res_queue_.front().second.content_length_ -
-							 1 ) {
-						add_event_change_list( change_list, buf->client_fd,
-											   EVFILT_READ, EV_ENABLE, 0, 0,
-											   buf );
-						close( cur_event->ident );
-						add_event_change_list( change_list, cur_event->ident,
-											   EVFILT_READ, EV_DELETE, 0, 0,
-											   buf );
-						// need to check _rdsaved buffer before read.
-					}
-					break;
-			}
+			if ( req_res_controller( buf, change_list, cur_event ) == false )
+				break;
 		}
 		if ( buf->req_res_queue_.size() > 0 ) {
 			add_event_change_list( change_list, cur_event->ident, EVFILT_WRITE,
 								   EV_ENABLE, 0, 0, buf );
 		}
+	}
+}
+
+bool req_res_controller( t_client_buf               *buf,
+						 std::vector<struct kevent> &change_list,
+						 struct kevent              *cur_event ) {
+	switch ( buf->state_ ) {
+		case REQ_LINE_PARSING:
+			if ( buf->request_line_parser() == false ) {
+				buf->flag_ |= RDBUF_CHECKED;
+				break;
+			}
+		case REQ_HEADER_PARSING:
+			if ( buf->header_field_parser() == false ) {
+				// need to read more from the client socket.
+				buf->flag_ |= RDBUF_CHECKED;
+				break;
+			}
+			switch ( buf->req_res_queue_.back().first.req_type_ ) {
+				case REQ_GET:
+					// set_get_res();
+					// server file descriptor will be added to kqueue
+					// if it has a body, status will be changed to RES_BODY
+					// plus, client fd EV_READ will be disabled.
+					if ( buf->req_res_queue_.back().first.content_length_ > 0 |
+						 buf->req_res_queue_.back().first.transfer_encoding_ &
+							 TE_CHUNKED ) {
+						// skip body logic.
+					}
+					return false;
+				case REQ_HEAD:
+					// same with REQ_GET without body.
+					// set_head_res();
+					if ( buf->req_res_queue_.back().first.content_length_ > 0 |
+						 buf->req_res_queue_.back().first.transfer_encoding_ &
+							 TE_CHUNKED ) {
+						// skip body logic.
+					}
+					break;
+				case REQ_POST:
+					// set_post_res();
+					if ( buf->req_res_queue_.back().first.body_flag_ ) {
+						uintptr_t fd = open(
+							buf->req_res_queue_.back().first.file_path_.c_str(),
+							O_RDONLY | O_CREAT | O_NONBLOCK | O_APPEND, 0644 );
+						if ( fd < 0 ) {
+							// open error
+						}
+						add_event_change_list( change_list, cur_event->ident,
+											   EVFILT_READ, EV_DISABLE, 0, 0,
+											   buf );
+						add_event_change_list( change_list, fd, EVFILT_READ,
+											   EV_ADD | EV_ENABLE, 0, 0, buf );
+					} else {
+						// maybe error?
+					}
+					break;
+				case REQ_PUT:
+					if ( buf->req_res_queue_.back().first.body_flag_ ) {
+						uintptr_t fd = open(
+							buf->req_res_queue_.back().first.file_path_.c_str(),
+							O_RDONLY | O_CREAT | O_NONBLOCK | O_TRUNC, 0644 );
+						if ( fd < 0 ) {
+							// open error
+						}
+						add_event_change_list( change_list, cur_event->ident,
+											   EVFILT_READ, EV_DISABLE, 0, 0,
+											   buf );
+						add_event_change_list( change_list, fd, EVFILT_READ,
+											   EV_ADD | EV_ENABLE, 0, 0, buf );
+					} else {
+						// maybe error?
+					}
+					break;
+				case REQ_DELETE:
+					//  HEADER?
+					break;
+				case REQ_UNDEFINED:
+					// error occurred, do not disconnect.
+					break;
+			}
+		case REQ_BODY:
+			// if body length is larger than client body limit, disconnect??
+			// if transfer encoding is chunked, keep checking it for the limit.
+		case RES_BODY:
+			// file end check.
+			if ( lseek( cur_event->ident, 0, SEEK_CUR ) ==
+				 buf->req_res_queue_.back().second.content_length_ - 1 ) {
+				add_event_change_list( change_list, buf->client_fd, EVFILT_READ,
+									   EV_ENABLE, 0, 0, buf );
+				close( cur_event->ident );
+				add_event_change_list( change_list, cur_event->ident,
+									   EVFILT_READ, EV_DELETE, 0, 0, buf );
+				// need to check _rdsaved buffer before read.
+				buf->state_ = REQ_LINE_PARSING;
+			}
+			break;
+	}
+	return true;
+}
+
+void kevnet_error_handler( uintptr_t serv_sd, struct kevent *cur_event,
+						   std::vector<struct kevent> &change_list ) {
+	if ( cur_event->ident == serv_sd ) {
+		error_exit( "server socket error", close, serv_sd );
+	} else {
+		t_client_buf *buf = static_cast<t_client_buf *>( cur_event->udata );
+		std::cerr << "client socket error" << std::endl;
+		disconnect_client( cur_event->ident, change_list, buf );
+	}
+}
+
+void write_event_handler( uintptr_t serv_sd, struct kevent *cur_event,
+						  std::vector<struct kevent> &change_list ) {
+	t_client_buf *buf = (t_client_buf *)cur_event->udata;
+
+	if ( buf->flag_ & RES_BODY ) {
+		write_res_body( cur_event->ident, buf->req_res_queue_.front().second,
+						change_list, buf );
+	} else {
+		if ( write_res_header( cur_event->ident,
+							   buf->req_res_queue_.front().second, change_list,
+							   buf ) < 0 ) {
+			// error
+		}
+	}
+	if ( buf->req_res_queue_.size() == 0 ||
+		 buf->req_res_queue_.front().second.body_flag_ &
+			 WRITE_READY == false ) {
+		add_event_change_list( change_list, cur_event->ident, EVFILT_WRITE,
+							   EV_DISABLE, 0, 0, buf );
 	}
 }
 
@@ -496,7 +554,7 @@ int main( void ) {
 	// int            l = 0;
 	while ( true ) {
 		event_len = kevent( kq, change_list.begin().base(), change_list.size(),
-							event_list, 8, NULL );
+							event_list, MAX_EVENT_LOOP, NULL );
 		if ( event_len == -1 ) {
 			error_exit( "kevent()", close, serv_sd );
 		}
@@ -505,44 +563,13 @@ int main( void ) {
 		// std::cout << "current loop: " << l++ << std::endl;
 
 		for ( int i = 0; i < event_len; ++i ) {
-			cur_event = &event_list[i];
-
+			cur_event = &event_list[i++];
 			if ( cur_event->flags & EV_ERROR ) {
-				if ( cur_event->ident == serv_sd ) {
-					error_exit( "server socket error", close, serv_sd );
-				} else {
-					t_client_buf *buf =
-						static_cast<t_client_buf *>( cur_event->udata );
-					std::cerr << "client socket error" << std::endl;
-					disconnect_client( cur_event->ident, change_list, buf );
-				}
+				kevnet_error_handler( serv_sd, cur_event, change_list );
 			} else if ( cur_event->filter == EVFILT_READ ) {
 				read_event_handler( serv_sd, cur_event, change_list );
 			} else if ( cur_event->filter == EVFILT_WRITE ) {
-				// std::cout << "sending response" << std::endl;
-
-				t_client_buf *buf = (t_client_buf *)cur_event->udata;
-
-				if ( buf->flag_ & RES_BODY ) {
-					write_res_body( cur_event->ident, change_list, buf );
-				} else {
-					if ( write_res_header( cur_event->ident,
-										   buf->req_res_queue_.front().second,
-										   change_list, buf ) < 0 ) {
-						// error
-					}
-					if ( buf->req_res_queue_.size() == 0 ) {
-						add_event_change_list( change_list, cur_event->ident,
-											   EVFILT_WRITE, EV_DISABLE, 0, 0,
-											   buf );
-					}
-				}
-				if ( buf->flag_ & SOCK_WRITE == false ) {
-					add_event_change_list( change_list, cur_event->ident,
-										   EVFILT_WRITE, EV_DISABLE, 0, 0,
-										   buf );
-				}
-				std::cout << "sending response end" << std::endl;
+				write_event_handler( serv_sd, cur_event, change_list );
 			}
 		}
 	}
