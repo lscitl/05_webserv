@@ -1,18 +1,26 @@
 #include "spx_port_info.hpp"
+#include "spx_autoindex_generator.hpp"
 #include "spx_core_type.hpp"
+#include "spx_core_util_box.hpp"
+#include "spx_req_res_field.hpp"
 
+#include <cstddef>
 #include <dirent.h>
+#include <string>
+#include <sys/socket.h>
 
 namespace {
 
 	inline void
 	close_socket_and_exit__(int const prev_socket_size, port_info_vec& port_info) {
+		spx_log_(COLOR_RED "close_socket_and_exit__" COLOR_RESET);
 		for (int i = 0; i <= prev_socket_size; ++i) {
 			if (i == port_info[i].listen_sd) {
+				spx_log_("close port: ", port_info[i].my_port);
 				close(port_info[i].listen_sd);
 			}
 		}
-		error_exit_msg_perror("socket error");
+		exit(spx_error);
 	}
 
 } // namespace
@@ -68,75 +76,100 @@ server_info_t::get_error_page_path_(uint32_t const& error_code) const {
 
 uri_location_t const*
 server_info_t::get_uri_location_t_(std::string const& uri,
-								   uri_resolved_t&	  uri_resolved_sets) const { // TODO :: make more readable
-	uri_location_t*				return_location = NULL;
-	std::string					temp;
-	std::string					temp_root;
-	std::string					temp_location;
-	std::string					temp_extension;
-	std::string					temp_index;
-	uint16_t					flag_check_dup = 0;
-	uint16_t					root_uri_flag  = 0;
-	std::string::const_iterator it			   = uri.begin();
+								   uri_resolved_t&	  uri_resolved_sets,
+								   int				  request_method) const {
 
-	uri_resolved_sets.is_cgi_			= false;
-	uri_resolved_sets.is_same_location_ = false;
-	uri_resolved_sets.cgi_loc_			= NULL;
-	uri_resolved_sets.request_uri_		= uri;
+	uri_location_t*				return_location		 = NULL;
+	uri_location_t*				return_location_root = NULL;
+	std::string					temp;
+	std::string					candidate_physical_path;
+	std::string					candidate_phenomenon_path;
+	std::string					candidate_surfix_index;
+	uint32_t					flag_for_uri_status = 0;
+	std::string::const_iterator it					= uri.begin();
+
+	//  initialize
+	uri_resolved_sets.is_cgi_  = false;
+	uri_resolved_sets.cgi_loc_ = NULL;
+	uri_resolved_sets.cgi_path_info_.clear();
+	uri_resolved_sets.request_uri_.clear();
+	uri_resolved_sets.resolved_request_uri_.clear();
+	uri_resolved_sets.script_name_.clear();
+	uri_resolved_sets.script_filename_.clear();
+	uri_resolved_sets.path_info_.clear();
+	uri_resolved_sets.path_translated_.clear();
+	uri_resolved_sets.query_string_.clear();
+	uri_resolved_sets.fragment_.clear();
+
+	if (uri.empty()) {
+		return NULL;
+	}
+
+	uri_resolved_sets.request_uri_ = uri;
 
 	enum {
 		uri_main, // 0
-		uri_remain,
+		uri_depth,
 		uri_cgi,
 		uri_query,
 		uri_fragment,
 		uri_find_delimeter_case, // 5
 		uri_done,
 		uri_end
-	} state,
-		next_state;
+	} state;
 
-	state	   = uri_main;
-	next_state = uri_find_delimeter_case;
+	state = uri_main;
 
 	while (state != uri_end) {
 		switch (state) {
 		case uri_main: {
-			while (*it == '/') {
+			while (it != uri.end() && *it == '/') {
 				++it;
 			}
 			temp += "/";
-			while (syntax_(usual_for_uri_parse_, static_cast<uint8_t>(*it))) {
+			while (it != uri.end() && syntax_(usual_for_uri_parse_, static_cast<uint8_t>(*it))) {
 				temp += *it;
 				++it;
 			}
-			uri_location_map_p::iterator it_ = uri_case.find(temp);
-			if (it_ != uri_case.end()) {
-				return_location = &it_->second;
-				temp_index		= it_->second.index;
-				temp_root		= it_->second.root;
-				temp_location	= it_->second.uri;
-				flag_check_dup |= Kuri_same_uri;
-			} else {
-				it_ = uri_case.find("/");
-				if (it_ != uri_case.end()) {
-					return_location = &it_->second;
-					temp_root		= it_->second.root;
-					temp_index		= it_->second.index;
-					temp_location	= it_->second.uri;
-					root_uri_flag |= 1;
-
-				} else {
-					temp_root = this->root;
-				}
+			uri_location_map_p::iterator loc_it = uri_case.find(temp);
+			if ((it != uri.end() && *it == '.') || loc_it == uri_case.end()) {
+				flag_for_uri_status |= Kuri_notfound_uri;
+				loc_it = uri_case.find("/");
 				uri_resolved_sets.script_name_ += temp;
 			}
+			return_location			  = &loc_it->second;
+			return_location_root	  = &loc_it->second;
+			candidate_physical_path	  = loc_it->second.root;
+			candidate_phenomenon_path = loc_it->second.uri;
+			if (request_method & (REQ_POST | REQ_PUT)) {
+				candidate_surfix_index = loc_it->second.saved_path;
+			} else {
+				candidate_surfix_index = loc_it->second.index;
+			}
+			if (!(return_location->cgi_pass.empty())) {
+				std::string				 extension = loc_it->second.cgi_pass.substr(loc_it->second.cgi_pass.find_last_of('.'));
+				cgi_list_map_p::iterator cgi_it	   = cgi_case.find(extension);
+				if (cgi_it != cgi_case.end()) {
+					uri_resolved_sets.cgi_path_info_   = cgi_it->second.cgi_path_info;
+					uri_resolved_sets.script_filename_ = loc_it->second.cgi_pass;
+				} else {
+					uri_resolved_sets.cgi_path_info_ = loc_it->second.cgi_pass;
+				}
+				uri_resolved_sets.is_cgi_  = true;
+				uri_resolved_sets.cgi_loc_ = &loc_it->second;
+				flag_for_uri_status |= Kuri_cgi;
+				flag_for_uri_status |= Kflag_cgi_pass;
+			}
 			temp.clear();
-			state = next_state;
+			state = uri_find_delimeter_case;
 			break;
 		}
 
 		case uri_find_delimeter_case: {
+			if (it == uri.end()) {
+				state = uri_done;
+				break;
+			}
 			switch (*it) {
 			case '?': {
 				++it;
@@ -153,11 +186,7 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 				break;
 			}
 			case '/': {
-				while (syntax_(only_slash_, static_cast<uint8_t>(*it))) {
-					++it;
-				}
-				temp += "/";
-				state = uri_remain;
+				state = uri_depth;
 				break;
 			}
 			default: {
@@ -168,28 +197,25 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 			break;
 		}
 
-		case uri_remain: {
-			while (syntax_(usual_for_uri_parse_, static_cast<uint8_t>(*it))) {
+		case uri_depth: {
+			while (it != uri.end() && *it == '/') {
+				++it;
+			}
+			temp += "/";
+			while (it != uri.end() && syntax_(usual_for_uri_parse_, static_cast<uint8_t>(*it))) {
 				temp += *it;
 				++it;
 			}
-			if (!(flag_check_dup & Kuri_cgi)) {
-				if (flag_check_dup & Kuri_same_uri) {
-					flag_check_dup |= Kuri_inner_uri;
-				}
-				if (temp.size() != 1) {
-					flag_check_dup &= ~Kuri_same_uri;
-					uri_resolved_sets.script_name_ += temp;
-				}
-			} else {
-				flag_check_dup |= Kuri_path_info;
+			if (flag_for_uri_status & Kuri_cgi) {
+				flag_for_uri_status |= Kuri_path_info;
 				uri_resolved_sets.path_info_ += temp;
-				while (syntax_(except_query_fragment_, static_cast<uint8_t>(*it))) {
-					temp_extension += *it;
+				while (it != uri.end() && syntax_(except_query_fragment_, static_cast<uint8_t>(*it))) {
+					uri_resolved_sets.path_info_ += *it;
 					++it;
 				}
-				uri_resolved_sets.path_info_ += temp_extension;
-				temp_extension.clear();
+			} else {
+				flag_for_uri_status |= Kuri_depth_uri;
+				uri_resolved_sets.script_name_ += temp;
 			}
 			temp.clear();
 			state = uri_find_delimeter_case;
@@ -197,26 +223,31 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 		}
 
 		case uri_cgi: {
-			while (syntax_(except_slash_query_fragment_, static_cast<uint8_t>(*it))) {
-				temp_extension += *it;
+			while (it != uri.end() && syntax_(except_slash_query_fragment_, static_cast<uint8_t>(*it))) {
+				temp += *it;
 				++it;
 			}
-			if (flag_check_dup & Kuri_cgi) {
-				flag_check_dup |= Kuri_path_info;
-				uri_resolved_sets.path_info_ += temp_extension;
+			if (flag_for_uri_status & Kuri_cgi) {
+				uri_resolved_sets.path_info_ += temp;
 			} else {
-				std::string				 check_ext = temp_extension.substr(temp_extension.find_last_of("."));
-				cgi_list_map_p::iterator it_	   = cgi_case.find(check_ext);
-				if (it_ != cgi_case.end()) {
-					if (temp_extension.find_last_of(".") != 0) {
-						uri_resolved_sets.is_cgi_ = true;
+				size_t pos_ = temp.find_last_of(".");
+				if (pos_ != std::string::npos) {
+					std::string				 check_extension = temp.substr(pos_);
+					cgi_list_map_p::iterator cgi_it			 = cgi_case.find(check_extension);
+					if (cgi_it != cgi_case.end()) {
+						uri_resolved_sets.cgi_loc_		 = &cgi_it->second;
+						uri_resolved_sets.is_cgi_		 = true;
+						uri_resolved_sets.cgi_path_info_ = cgi_it->second.cgi_path_info;
+						return_location					 = &cgi_it->second;
+						flag_for_uri_status |= Kuri_cgi;
 					}
-					uri_resolved_sets.cgi_loc_ = &it_->second;
-					flag_check_dup |= Kuri_cgi;
 				}
-				uri_resolved_sets.script_name_ += temp_extension;
+				if (!(flag_for_uri_status & Kuri_cgi)) {
+					flag_for_uri_status |= Kuri_check_extension;
+				}
+				uri_resolved_sets.script_name_ += temp;
 			}
-			temp_extension.clear();
+			temp.clear();
 			state = uri_find_delimeter_case;
 			break;
 		}
@@ -226,17 +257,13 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 				uri_resolved_sets.query_string_ += *it;
 				++it;
 			}
-			if (*it == '#') {
-				state = uri_fragment;
-			} else {
-				state = uri_done;
-			}
+			state = uri_find_delimeter_case;
 			break;
 		}
 
-		case uri_fragment: { // NOTE : fragment is not used in this project. just passing
+		case uri_fragment: {
 			while (it != uri.end()) {
-				// uri_resolved_sets.fragment_ += *it;
+				uri_resolved_sets.fragment_ += *it;
 				++it;
 			}
 			state = uri_done;
@@ -244,27 +271,53 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 		}
 
 		case uri_done: {
-			if (flag_check_dup & Kuri_same_uri && !(flag_check_dup & (Kuri_cgi | Kuri_path_info))) {
-				uri_resolved_sets.is_same_location_ = true;
+			if (flag_for_uri_status & Kuri_depth_uri && flag_for_uri_status & Kuri_notfound_uri) {
+				spx_log_("depth_uri and notfound_uri");
+				return_location			   = NULL;
+				uri_resolved_sets.cgi_loc_ = NULL;
+				uri_resolved_sets.is_cgi_  = false;
+			} else if (!(flag_for_uri_status & Kuri_cgi)
+					   && return_location->accepted_methods_flag & request_method
+					   && !(flag_for_uri_status & Kuri_notfound_uri)
+					   && !(return_location->cgi_path_info.empty())) {
+				uri_resolved_sets.cgi_loc_ = return_location;
+				uri_resolved_sets.is_cgi_  = true;
 			}
-			if (flag_check_dup & Kuri_path_info && root_uri_flag & 1) {
-				return_location = NULL;
+			uri_resolved_sets.script_filename_ = path_resolve_(candidate_physical_path + uri_resolved_sets.script_name_);
+			uri_resolved_sets.script_name_	   = path_resolve_(candidate_phenomenon_path + uri_resolved_sets.script_name_);
+			if (!(flag_for_uri_status & (Kuri_notfound_uri | Kuri_cgi | Kuri_check_extension))
+				&& !(candidate_surfix_index.empty())) {
+				DIR* dir = NULL;
+				if (request_method & (REQ_GET | REQ_HEAD)
+					|| ((request_method & (REQ_POST | REQ_PUT)) && (dir = opendir(uri_resolved_sets.script_filename_.c_str())))) {
+					uri_resolved_sets.script_filename_ = path_resolve_(uri_resolved_sets.script_filename_ + "/" + candidate_surfix_index);
+					uri_resolved_sets.script_name_	   = path_resolve_(uri_resolved_sets.script_name_ + "/" + candidate_surfix_index);
+					if (dir) {
+						closedir(dir);
+					}
+				}
 			}
-			uri_resolved_sets.script_filename_ = path_resolve_(temp_root + "/" + uri_resolved_sets.script_name_);
-			uri_resolved_sets.script_name_	   = path_resolve_(temp_location + uri_resolved_sets.script_name_);
-
-			DIR* dir = opendir(uri_resolved_sets.script_filename_.c_str());
-			if ((uri_resolved_sets.is_same_location_ || ((flag_check_dup & Kuri_inner_uri) && dir)) && !temp_index.empty()) { // TODO: only get case add index, when put or post case add saved_path
-				uri_resolved_sets.script_filename_ = path_resolve_(uri_resolved_sets.script_filename_ + "/" + temp_index);
-				uri_resolved_sets.script_name_	   = path_resolve_(uri_resolved_sets.script_name_ + "/" + temp_index);
+			if (flag_for_uri_status & Kflag_cgi_pass) {
+				uri_resolved_sets.script_filename_ = uri_resolved_sets.cgi_loc_->cgi_pass;
 			}
-			if (dir) {
-				closedir(dir);
+			if (return_location != NULL && flag_for_uri_status & Kuri_cgi) {
+				std::ifstream file;
+				file.open(uri_resolved_sets.script_filename_.c_str(), std::ios::in);
+				if (file.good()) {
+					if (!(flag_for_uri_status & Kuri_notfound_uri)) {
+						return_location = return_location_root;
+					}
+					spx_log_("cgi file exist");
+					file.close();
+				} else {
+					spx_log_("cgi file doesn't exist");
+					uri_resolved_sets.script_filename_ = uri_resolved_sets.cgi_loc_->cgi_pass;
+				}
 			}
 			uri_resolved_sets.path_info_			= path_resolve_(uri_resolved_sets.path_info_);
 			uri_resolved_sets.resolved_request_uri_ = uri_resolved_sets.script_name_ + uri_resolved_sets.path_info_;
 			if (uri_resolved_sets.path_info_.empty() == false) {
-				uri_resolved_sets.path_translated_ = path_resolve_(temp_root + "/" + uri_resolved_sets.path_info_);
+				uri_resolved_sets.path_translated_ = path_resolve_(candidate_physical_path + "/" + uri_resolved_sets.path_info_);
 			}
 			state = uri_end;
 			break;
@@ -274,6 +327,10 @@ server_info_t::get_uri_location_t_(std::string const& uri,
 		}
 		} // switch end
 	} // while end
+	if (return_location) {
+		spx_log_(return_location->uri);
+	}
+	uri_resolved_sets.print_();
 	return return_location;
 }
 
@@ -312,12 +369,12 @@ void
 uri_resolved_t::print_(void) const {
 	spx_log_("\n-----resolved uri info-----");
 	spx_log_("is_cgi: ", is_cgi_);
-	spx_log_("is_same_location: ", is_same_location_);
 	if (cgi_loc_ == NULL) {
 		spx_log_("cgi_location_t: NULL");
 	} else {
 		spx_log_("cgi_location_t: ON");
 	}
+	spx_log_("cgi_path_info: ", cgi_path_info_);
 	spx_log_("request_uri: ", request_uri_);
 	spx_log_("resolved_request_uri: ", resolved_request_uri_);
 	spx_log_("script_name: ", script_name_);
@@ -361,8 +418,11 @@ server_info_for_copy_stage_t::print_() const {
 void
 server_info_t::print_(void) const {
 	std::cout << COLOR_GREEN << " [ server_name ] " << server_name << COLOR_RESET;
-	if (default_server_flag == Kdefault_server)
+	if (default_server_flag == Kdefault_server) {
 		std::cout << COLOR_RED << " <---- default_server" << COLOR_RESET << std::endl;
+	} else {
+		std::cout << std::endl;
+	}
 	std::cout << "ip: " << ip << std::endl;
 	std::cout << "port: " << port << std::endl;
 	std::cout << "root: " << root << std::endl;
@@ -388,14 +448,16 @@ server_info_t::print_(void) const {
 	}
 	std::cout << std::endl;
 
-	std::cout << COLOR_RED << "cgi_case: " << cgi_case.size() << "\t---------------" << COLOR_RESET << std::endl;
-	cgi_list_map_p::const_iterator it_cgi = cgi_case.begin();
-	while (it_cgi != cgi_case.end()) {
-		std::cout << "\n[ cgi ] " << it_cgi->first << std::endl;
-		it_cgi->second.print_();
-		it_cgi++;
+	if (cgi_case.size() != 0) {
+		std::cout << COLOR_RED << "cgi_case: " << cgi_case.size() << "\t---------------" << COLOR_RESET << std::endl;
+		cgi_list_map_p::const_iterator it_cgi = cgi_case.begin();
+		while (it_cgi != cgi_case.end()) {
+			std::cout << "\n[ cgi ] " << it_cgi->first << std::endl;
+			it_cgi->second.print_();
+			it_cgi++;
+		}
+		std::cout << std::endl;
 	}
-	std::cout << std::endl;
 }
 
 /* NOTE: uri_location_t
@@ -436,7 +498,6 @@ uri_location_t::~uri_location() {
 
 void
 uri_location_t::print_(void) const {
-	// std::cout << "uri_location_t: " << this << std::endl;
 	std::cout << "module_state: " << module_state << std::endl;
 	std::cout << "accepted_methods_flag: ";
 	if (accepted_methods_flag & KGet)
@@ -493,8 +554,9 @@ port_info_t::search_server_config_(std::string const& host_name) {
 status
 socket_init_and_build_port_info(total_port_server_map_p& config_info,
 								port_info_vec&			 port_info,
-								uint32_t&				 socket_size) {
-	uint32_t prev_socket_size;
+								int64_t&				 socket_size,
+								int64_t&				 first_socket) {
+	int64_t prev_socket_size;
 
 	for (total_port_server_map_p::const_iterator it = config_info.begin(); it != config_info.end(); ++it) {
 
@@ -505,60 +567,59 @@ socket_init_and_build_port_info(total_port_server_map_p& config_info,
 				temp_port_info.my_port	   = it->first;
 				temp_port_info.my_port_map = it->second;
 
-				temp_port_info.listen_sd = socket(AF_INET, SOCK_STREAM, 0); // TODO :: key
+				temp_port_info.listen_sd = socket(AF_INET, SOCK_STREAM, 0);
 				prev_socket_size		 = socket_size;
 				socket_size				 = temp_port_info.listen_sd;
+				if (prev_socket_size == -1) {
+					first_socket = socket_size;
+				}
 				if (temp_port_info.listen_sd < 0) {
+					error_str("socket error");
 					close_socket_and_exit__(prev_socket_size, port_info);
 				}
 				int opt(1);
-				if (setsockopt(temp_port_info.listen_sd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) { // NOTE:: SO_REUSEPORT
-					error_fn("setsockopt", close, temp_port_info.listen_sd);
+				if (setsockopt(temp_port_info.listen_sd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+					error_fn("setsockopt error", close, temp_port_info.listen_sd);
 					close_socket_and_exit__(prev_socket_size, port_info);
 				}
 				if (fcntl(temp_port_info.listen_sd, F_SETFL, O_NONBLOCK) == -1) {
-					error_fn("fcntl", close, temp_port_info.listen_sd);
+					error_fn("fcntl error", close, temp_port_info.listen_sd);
 					close_socket_and_exit__(prev_socket_size, port_info);
 				}
+				bzero((char*)&temp_port_info.addr_server, sizeof(temp_port_info.addr_server));
 				temp_port_info.addr_server.sin_family	   = AF_INET;
 				temp_port_info.addr_server.sin_port		   = htons(temp_port_info.my_port);
 				temp_port_info.addr_server.sin_addr.s_addr = htonl(INADDR_ANY);
 				if (bind(temp_port_info.listen_sd, (struct sockaddr*)&temp_port_info.addr_server, sizeof(temp_port_info.addr_server)) == -1) {
+					spx_log_("current listen_sd : ", temp_port_info.listen_sd);
+					spx_log_("prev_socket_size", prev_socket_size);
 					std::stringstream ss;
 					ss << temp_port_info.my_port;
-					std::string err = "bind port " + ss.str() + " ";
-					error_fn(err, close, temp_port_info.listen_sd);
+					std::string err = "bind at port " + ss.str();
+					error_log_(err);
+					error_fn("bind error", close, temp_port_info.listen_sd);
 					close_socket_and_exit__(prev_socket_size, port_info);
 				}
 				if (listen(temp_port_info.listen_sd, LISTEN_BACKLOG_SIZE) < 0) {
-					error_fn("listen", close, temp_port_info.listen_sd);
+					error_fn("listen error", close, temp_port_info.listen_sd);
 					close_socket_and_exit__(prev_socket_size, port_info);
 				}
-				if (prev_socket_size == 0) {
-					uint32_t i = 0;
-					while (i < socket_size) {
-						port_info.push_back(temp_port_info);
-						++i;
-					}
-				} else {
-					uint32_t i = prev_socket_size + 1;
-					while (i < socket_size) {
-						port_info.push_back(temp_port_info);
-						++i;
-					}
+				int64_t i = prev_socket_size;
+				while (i < socket_size) {
+					port_info.push_back(temp_port_info);
+					++i;
 				}
-				port_info.push_back(temp_port_info);
 				break;
 			}
 			++it2;
 		}
 		if (it2 == it->second.end()) {
 			std::cerr << "no default server in port " << it->first << std::endl;
-			close_socket_and_exit__(prev_socket_size, port_info);
+			close_socket_and_exit__(socket_size, port_info);
 		}
 	}
 	if (socket_size == 0) {
-		error_exit_msg("socket size error");
+		error_exit("socket size error");
 	}
 	++socket_size;
 	config_info.clear();

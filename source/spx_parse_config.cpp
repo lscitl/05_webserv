@@ -1,5 +1,7 @@
 #include "spx_parse_config.hpp"
+#include "spx_port_info.hpp"
 
+#include <dirent.h>
 namespace {
 
 #ifdef CONFIG_STATE_DEBUG
@@ -107,7 +109,6 @@ spx_config_syntax_checker(std::string const&	   buf,
 		conf_location_CB_open, // 15
 		conf_location_CB_close,
 		conf_accepted_methods,
-		// conf_set_module_case, // NOTE: specific action info
 		conf_root,
 		conf_index,
 		conf_autoindex, // 20
@@ -142,12 +143,20 @@ spx_config_syntax_checker(std::string const&	   buf,
 
 		case conf_zero: {
 			if (server_count != 0) {
+				if (!(flag_default_part & Kflag_root_slash)) {
+					return error__("conf_zero", "server root need to set '/' location ", line_number_count);
+				}
 				if (!(flag_default_part & Kflag_server_name)) {
 					temp_basic_server_info.server_name = "localhost";
 				}
 				if (!(flag_default_part & Kflag_root)) {
 					temp_basic_server_info.root = cur_path;
 				}
+				DIR* dir = opendir(temp_basic_server_info.root.c_str());
+				if (dir == NULL) {
+					return error__("conf_zero", "server root is not valid dir_name. check exist or control level", line_number_count);
+				}
+				closedir(dir);
 				total_port_server_map_p::iterator check_default_server;
 				check_default_server = saved_total_port_map_3.find(temp_basic_server_info.port);
 				if (check_default_server == saved_total_port_map_3.end()) {
@@ -218,6 +227,9 @@ spx_config_syntax_checker(std::string const&	   buf,
 				break;
 			}
 			if (*it == ';') {
+				if (prev_state == conf_server_CB_open || prev_state == conf_location_CB_open) {
+					return error__("conf_start", "semicolon can't exist after CB open - error", line_number_count);
+				}
 				prev_state = next_state;
 				state	   = conf_endline;
 			} else {
@@ -563,20 +575,33 @@ spx_config_syntax_checker(std::string const&	   buf,
 					if (flag_location_part & (Kflag_index | Kflag_autoindex | Kflag_redirect)) {
 						return error__("conf_location_zero", "index, autoindex, redirect can't be used in cgi location", line_number_count);
 					}
+					if (temp_uri_location_info.module_state == Kmodule_none) {
+						temp_uri_location_info.module_state = Kmodule_cgi;
+					} else {
+						return error__("conf_location_zero", "module_state already defined", line_number_count);
+					}
+					if (flag_location_part & Kflag_saved_path) {
+						if (temp_uri_location_info.saved_path.at(0) != '.') {
+							return error__("conf_location_zero", "cgi saved_path must start with '.' ", line_number_count);
+						}
+					} else {
+						temp_uri_location_info.saved_path = temp_basic_server_info.root + "/cgi_saved";
+					}
 					if (!(flag_location_part & Kflag_cgi_path_info)) {
 						return error__("conf_location_zero", "cgi_path_info not defined", line_number_count);
+					}
+					if (!(flag_location_part & Kflag_cgi_pass)) {
+						return error__("conf_location_zero", "cgi_pass not defined", line_number_count);
 					}
 					std::pair<std::map<const std::string, uri_location_t>::iterator, bool> check_dup;
 					check_dup = saved_cgi_list_map_1.insert(std::make_pair(temp_uri_location_info.uri, temp_uri_location_info));
 					if (check_dup.second == false) {
 						return error__("conf_location_zero", "duplicate cgi location", line_number_count);
 					}
-					if (temp_uri_location_info.module_state == Kmodule_none) {
-						temp_uri_location_info.module_state = Kmodule_cgi;
-					} else {
-						return error__("conf_location_zero", "module_state already defined", line_number_count);
-					}
 				} else if (temp_uri_location_info.uri.at(0) == '/') { // location_case
+					if (flag_location_part & Kflag_cgi_pass && (flag_location_part & (Kflag_cgi_path_info | Kflag_redirect | Kflag_index | Kflag_autoindex))) {
+						return error__("conf_location_zero", "cgi_pass can't be exist with index, autoindex, redirect, cgi_path_info", line_number_count);
+					}
 					if (!(flag_location_part & Kflag_root)) {
 						if (temp_basic_server_info.root.empty()) {
 							temp_uri_location_info.root = cur_path + temp_uri_location_info.uri;
@@ -584,16 +609,27 @@ spx_config_syntax_checker(std::string const&	   buf,
 							temp_uri_location_info.root = temp_basic_server_info.root + temp_uri_location_info.uri;
 						}
 					}
-					if (temp_uri_location_info.accepted_methods_flag & (KPost | KPut) && !(flag_location_part & Kflag_saved_path)) {
-						return error__("conf_location_zero", "Post, Put found, but saved_path not defined", line_number_count);
+					if (flag_location_part & Kflag_saved_path) {
+						if (!(flag_location_part & Kflag_cgi_pass) && temp_uri_location_info.saved_path.at(0) == '.') {
+							return error__("conf_location_zero", "location saved_path must not start with '.' ", line_number_count);
+						}
+					} else {
+						temp_uri_location_info.saved_path = temp_uri_location_info.uri + "_saved";
+					}
+					if (!(flag_location_part & (Kflag_redirect | Kflag_cgi_pass))) {
+						DIR* dir = opendir(temp_uri_location_info.root.c_str());
+						if (dir == NULL) {
+							return error__("conf_location_zero", "location root is not valid dir_name. check exist or control level", line_number_count);
+						}
+						closedir(dir);
+					}
+					if (temp_uri_location_info.module_state == Kmodule_none) {
+						temp_uri_location_info.module_state = Kmodule_serve;
 					}
 					std::pair<std::map<const std::string, uri_location_t>::iterator, bool> check_dup;
 					check_dup = saved_location_uri_map_1.insert(std::make_pair(temp_uri_location_info.uri, temp_uri_location_info));
 					if (check_dup.second == false) {
 						return error__("conf_location_zero", "duplicate location", line_number_count);
-					}
-					if (temp_uri_location_info.module_state == Kmodule_none) {
-						temp_uri_location_info.module_state = Kmodule_serve;
 					}
 				} else {
 					return error__("conf_location_zero", "location uri syntax error", line_number_count);
@@ -748,6 +784,9 @@ spx_config_syntax_checker(std::string const&	   buf,
 				if (*it == '/') {
 					return error__("conf_location_uri", "only allowed one depth slash", line_number_count);
 				} else if (*it == '.') {
+					if (cgi_dot_checker_ == 0) {
+						return error__("conf_location_uri", "location uri doesn't support '.' character to prevent ambiguous", line_number_count);
+					}
 					++cgi_dot_checker_;
 					if (cgi_dot_checker_ > 1) {
 						return error__("conf_location_uri", "only allowed one depth dot", line_number_count);
@@ -761,6 +800,9 @@ spx_config_syntax_checker(std::string const&	   buf,
 				prev_state				   = state;
 				state					   = conf_start;
 				next_state				   = conf_location_CB_open;
+				if (!temp_uri_location_info.uri.compare("/")) {
+					flag_default_part |= Kflag_root_slash;
+				}
 				temp_string.clear();
 				break;
 			}
@@ -964,6 +1006,13 @@ spx_config_syntax_checker(std::string const&	   buf,
 				next_state						= conf_waiting_location_value;
 				flag_location_part |= Kflag_redirect;
 				temp_uri_location_info.module_state = Kmodule_redirect;
+				{
+					uri_location_map_p::iterator dup_check = saved_location_uri_map_1.find(server_info_t::path_resolve_('/' + temp_string));
+					if (dup_check != saved_location_uri_map_1.end()
+						&& server_info_t::path_resolve_('/' + dup_check->second.redirect) == temp_uri_location_info.uri) {
+						return error__("conf_redirect", "recursive redirect found", line_number_count);
+					}
+				}
 				temp_string.clear();
 				break;
 			}
@@ -994,9 +1043,15 @@ spx_config_syntax_checker(std::string const&	   buf,
 			}
 			if (syntax_(isspace_, static_cast<uint8_t>(*it)) || *it == ';') {
 				temp_uri_location_info.cgi_pass = temp_string;
-				prev_state						= state;
-				state							= conf_start;
-				next_state						= conf_waiting_location_value;
+				std::fstream exist_test;
+				exist_test.open(temp_uri_location_info.cgi_pass.c_str(), std::ios::in);
+				if (!exist_test.is_open()) {
+					return error__("conf_cgi_pass", "invalid cgi_pass", line_number_count);
+				}
+				exist_test.close();
+				prev_state = state;
+				state	   = conf_start;
+				next_state = conf_waiting_location_value;
 				flag_location_part |= Kflag_cgi_pass;
 				temp_string.clear();
 				break;
@@ -1011,9 +1066,15 @@ spx_config_syntax_checker(std::string const&	   buf,
 			}
 			if (syntax_(isspace_, static_cast<uint8_t>(*it)) || *it == ';') {
 				temp_uri_location_info.cgi_path_info = temp_string;
-				prev_state							 = state;
-				state								 = conf_start;
-				next_state							 = conf_waiting_location_value;
+				std::fstream exist_test;
+				exist_test.open(temp_uri_location_info.cgi_path_info.c_str(), std::ios::in);
+				if (!exist_test.is_open()) {
+					return error__("conf_cgi_path_info", "invalid cgi_pass_info", line_number_count);
+				}
+				exist_test.close();
+				prev_state = state;
+				state	   = conf_start;
+				next_state = conf_waiting_location_value;
 				flag_location_part |= Kflag_cgi_path_info;
 				temp_string.clear();
 				break;

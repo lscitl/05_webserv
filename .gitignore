@@ -1,6 +1,6 @@
 *.pdf
 
-*.DS_Store
+.DS_Store
 
 **/*.DS_Store
 
@@ -36,3 +36,8 @@ CMake*
 tmp/**
 
 .cache
+
+**/multiple_same
+**/file_should_exist_after
+
+**/store/**

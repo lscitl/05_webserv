@@ -47,7 +47,8 @@ typedef enum {
 	Kflag_root		  = 1 << 0,
 	Kflag_listen	  = 1 << 1,
 	Kflag_server_name = 1 << 2,
-	Kflag_error_page  = 1 << 3
+	Kflag_error_page  = 1 << 3,
+	Kflag_root_slash  = 1 << 4
 } flag_config_parse_basic_part_e;
 
 typedef enum {
@@ -77,7 +78,7 @@ typedef std::map<const uint32_t, server_map_p>		total_port_server_map_p;
 typedef struct uri_location_for_copy_stage {
 	std::string			uri;
 	module_case_state_e module_state;
-	uint8_t				accepted_methods_flag;
+	uint16_t			accepted_methods_flag;
 	std::string			redirect;
 	std::string			root;
 	std::string			index;
@@ -110,7 +111,7 @@ typedef struct server_info_for_copy_stage {
 typedef struct uri_location {
 	const std::string		  uri;
 	const module_case_state_e module_state;
-	const uint8_t			  accepted_methods_flag;
+	const uint16_t			  accepted_methods_flag;
 	const std::string		  redirect;
 	const std::string		  root;
 	const std::string		  index;
@@ -131,18 +132,18 @@ typedef struct uri_location {
  */
 
 typedef enum {
-	Kuri_basic_slash = 1 << 0,
-	Kuri_cgi		 = 1 << 1,
-	Kuri_path_info	 = 1 << 2,
-	Kuri_fragment	 = 1 << 3,
-	Kuri_same_uri	 = 1 << 4,
-	Kuri_inner_uri	 = 1 << 5
+	Kuri_notfound_uri	 = 1 << 0,
+	Kuri_depth_uri		 = 1 << 1,
+	Kuri_check_extension = 1 << 2,
+	Kuri_cgi			 = 1 << 3,
+	Kuri_path_info		 = 1 << 4,
+	Kuri_cgi_pass		 = 1 << 5
 } uri_flag_e;
 
 typedef struct uri_resolved {
 	bool			is_cgi_;
-	bool			is_same_location_;
 	uri_location_t* cgi_loc_;
+	std::string		cgi_path_info_;
 	std::string		request_uri_;
 	std::string		resolved_request_uri_;
 	std::string		script_name_;
@@ -170,7 +171,7 @@ typedef struct server_info {
 	~server_info();
 
 	std::string const		 get_error_page_path_(uint32_t const& error_code) const;
-	uri_location_t const*	 get_uri_location_t_(std::string const& uri, uri_resolved_t& uri_resolved_sets) const;
+	uri_location_t const*	 get_uri_location_t_(std::string const& uri, uri_resolved_t& uri_resolved_sets, int request_method) const;
 	static std::string const path_resolve_(std::string const& unvalid_path);
 	void					 print_(void) const;
 
@@ -181,7 +182,7 @@ typedef struct server_info {
  */
 
 #ifndef LISTEN_BACKLOG_SIZE
-#define LISTEN_BACKLOG_SIZE 500
+#define LISTEN_BACKLOG_SIZE 1024
 #endif
 
 typedef struct port_info {
@@ -201,10 +202,10 @@ typedef std::vector<port_info_t> port_info_vec;
 status
 socket_init_and_build_port_info(total_port_server_map_p& config_info,
 								port_info_vec&			 port_info,
-								uint32_t&				 socket_size);
+								int64_t&				 socket_size,
+								int64_t&				 first_socket);
 
-int
-socket_init(total_port_server_map_p const& config_info);
+int socket_init(total_port_server_map_p const& config_info);
 
 // e.g. std::map<const std::string, const uri_location_t> uri_location_map_p;
 // e.g. std::map<const std::string, server_info_t>  server_map_p;

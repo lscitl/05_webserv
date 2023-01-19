@@ -1,26 +1,7 @@
 #include "spx_cgi_module.hpp"
-
+#include <cctype>
+#include <sstream>
 namespace {
-
-#define METHOD__MAP(XX) \
-	XX(1, GET)          \
-	XX(2, POST)         \
-	XX(3, PUT)          \
-	XX(4, DELETE)       \
-	XX(5, HEAD)
-
-	std::string
-	method_map_str_(int const status) {
-		switch (status) {
-#define XX(num, name) \
-	case REQ_##name:  \
-		return #name;
-			METHOD__MAP(XX)
-#undef XX
-		default:
-			return "<unknown>";
-		}
-	}
 
 	std::string
 	dashline_to_underline__(std::string const& str) {
@@ -29,7 +10,7 @@ namespace {
 			if (*it == '-') {
 				ret += '_';
 			} else {
-				ret += *it;
+				ret += std::toupper(*it);
 			}
 		}
 		return ret;
@@ -37,10 +18,11 @@ namespace {
 
 } // namespace
 
-CgiModule::CgiModule(uri_resolved_t const& org_cgi_loc, header_field_map const& req_header, uri_location_t const* cgi_loc_info)
-	: cgi_resolved_(org_cgi_loc)
-	, header_map_(req_header)
-	, cgi_loc_info_(cgi_loc_info) {
+CgiModule::CgiModule(uri_resolved_t const& org_cgi_loc, header_field_map const& req_header, uri_location_t const* cgi_loc_info, server_info_t const* server_info)
+	: _cgi_resolved(org_cgi_loc)
+	, _header_map(req_header)
+	, _cgi_loc_info(cgi_loc_info)
+	, _server_info(server_info) {
 }
 
 CgiModule::~CgiModule() { }
@@ -60,27 +42,36 @@ CgiModule::made_env_for_cgi_(int status) {
 		if (method != "<unknown>") {
 			vec_env_.push_back("REQUEST_METHOD=" + method);
 		}
-		vec_env_.push_back("REQUEST_URI=" + cgi_resolved_.resolved_request_uri_);
-		vec_env_.push_back("SCRIPT_NAME=" + cgi_resolved_.script_name_);
+		vec_env_.push_back("REQUEST_URI=" + _cgi_resolved.resolved_request_uri_);
+		vec_env_.push_back("SCRIPT_NAME=" + _cgi_resolved.script_name_);
 
 #ifdef STD_CGI_RFC // NOTE : in Formal CGI, PATH_INFO is after SCRIPT_NAME's path
 		if (!cgi_resolved_.path_info_.empty()) {
 			vec_env_.push_back("PATH_INFO=" + cgi_resolved_.path_info_);
 		}
 #else // NOTE : in this req_uri = path_info is for intra cgi tester
-		vec_env_.push_back("PATH_INFO=" + cgi_resolved_.resolved_request_uri_);
+		vec_env_.push_back("PATH_INFO=" + _cgi_resolved.resolved_request_uri_);
 #endif
-		if (!cgi_resolved_.query_string_.empty()) {
-			vec_env_.push_back("QUERY_STRING=" + cgi_resolved_.query_string_);
+		if (!_cgi_resolved.query_string_.empty()) {
+			vec_env_.push_back("QUERY_STRING=" + _cgi_resolved.query_string_);
 		}
-		if (cgi_loc_info_ && !(cgi_loc_info_->saved_path.empty())) {
-			vec_env_.push_back("SAVED_PATH=" + cgi_loc_info_->saved_path);
+		if (_cgi_loc_info) {
+			if (!(_cgi_loc_info->saved_path.empty())) {
+				vec_env_.push_back("SAVED_PATH=" + server_info_t::path_resolve_(_cgi_loc_info->saved_path));
+			} else if (_server_info) {
+				vec_env_.push_back("SAVED_PATH=" + server_info_t::path_resolve_(_server_info->root + "/tmp"));
+			}
 		}
-		// vec_env_.push_back("SERVER_NAME=" + ); // server name from server_info_t //TODO : need to add server_name
-		// vec_env_.push_back("SERVER_PORT=" +); // server port from server_info_t
+		if (_server_info) {
+			vec_env_.push_back("SERVER_NAME=" + _server_info->server_name);
+			std::stringstream ss(_server_info->port);
+			std::string		  temp;
+			ss >> temp;
+			vec_env_.push_back("SERVER_PORT=" + temp);
+		}
 	}
 
-	for (header_field_map::const_iterator it = header_map_.begin(); it != header_map_.end(); ++it) {
+	for (header_field_map::const_iterator it = _header_map.begin(); it != _header_map.end(); ++it) {
 		switch (it->first.at(0)) {
 		case 'a': {
 			if (it->first == "a-im") {
@@ -101,8 +92,6 @@ CgiModule::made_env_for_cgi_(int status) {
 				}
 			} else if (it->first == "authorization") {
 				vec_env_.push_back("HTTP_AUTHORIZATION=" + it->second);
-				// } else if (it->first == "auth-scheme") {
-				// 	vec_env_.push_back("AUTH_TYPE=" + it->second);
 			} else {
 				vec_env_.push_back("X_" + dashline_to_underline__(it->first) + "=" + it->second);
 			}
@@ -274,7 +263,6 @@ CgiModule::made_env_for_cgi_(int status) {
 
 	for (uint32_t i = 0; i < vec_env_.size(); ++i) {
 		env_for_cgi_.push_back(vec_env_[i].c_str());
-		std::cout << vec_env_[i].c_str() << std::endl;
 	}
 
 	env_for_cgi_.push_back(NULL);

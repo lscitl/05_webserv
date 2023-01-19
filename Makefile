@@ -21,15 +21,20 @@ ifdef DEBUG_FLAG
 	LOG	+=	$(addprefix -D , $(DEBUG_FLAG))
 endif
 
+# CXXFLAGS	+=	$(LOG)
+CXXFLAGS	+=	-D CONSOLE_LOG
+
 SRC			=	spacex.cpp \
 				spx_autoindex_generator.cpp \
 				spx_buffer.cpp \
+				spx_cgi_chunked.cpp \
 				spx_cgi_module.cpp \
 				spx_client.cpp \
 				spx_core_util_box.cpp \
 				spx_kqueue_module.cpp \
 				spx_parse_config.cpp \
 				spx_port_info.cpp \
+				spx_req_res_field.cpp \
 				spx_session_storage.cpp \
 				spx_syntax_checker.cpp
 
@@ -43,22 +48,25 @@ OBJ			=	$(addprefix $(OBJ_DIR), $(SRC:.cpp=.o))
 #	Compile Flags
 #==============================================================================
 CXX			=	c++
-# CXX_WARN_FLAGS	=	all extra error // NOTE: Need to uncomment later
+CXX_WARN_FLAGS	=	all extra error
+#// NOTE: Need to uncomment later
 CXX_STD_FLAGS	=	c++98
 CXXFLAGS	+=	$(addprefix -W, $(CXX_WARN_FLAGS))
 CXXFLAGS	+= -pedantic
 CXXFLAGS	+=	$(addprefix -std=, $(CXX_STD_FLAGS))
-CXXFLAGS	+=	$(LOG)
 
 RM			=	rm -f
 
+OPT			=	-O3
 DEBUG		=	-g
 SNTZ		=	-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer
 MEM			=	-fsanitize=memory -fsanitize-memory-track-origins \
 				-fPIE -pie -fno-omit-frame-pointer
 LEAK		=	-fsanitize=leak
 
-# CXXFLAGS	+=	$(DEBUG) $(SNTZ)
+# CXXFLAGS	+=	$(DEBUG)
+# CXXFLAGS	+=	$(SNTZ)
+# CXXFLAGS	+=	$(OPT)
 # CXXFLAGS	+=	-fno-sanitize-recover
 # CXXFLAGS	+=	-fstack-protector -D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC
 
@@ -84,6 +92,8 @@ $(OBJ)		:	| $(OBJ_DIR)
 
 $(OBJ_DIR)%.o:	$(SRC_DIR)%.cpp $(INC_DIR)
 		$(CXX) $(CXXFLAGS) -o $@ -c $<
+
+spx			: ; make re CXXFLAGS="$(CXXFLAGS) $(LOG) $(DEBUG) $(SNTZ)"
 
 sntz		: ; make re CXXFLAGS="$(CXXFLAGS) $(DEBUG) $(SNTZ)"
 
